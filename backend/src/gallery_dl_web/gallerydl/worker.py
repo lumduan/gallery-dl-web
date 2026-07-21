@@ -26,6 +26,7 @@ import logging
 import os
 import sys
 import time
+import types
 from typing import IO, Any
 
 # Module-level references so tests can monkeypatch (e.g. ``gallery_dl.job.DownloadJob``).
@@ -35,19 +36,8 @@ from gallery_dl_web.gallerydl import config_builder, events
 
 logger = logging.getLogger("gallery_dl_web.worker")
 
-_MOD = "gallery_dl_web.gallerydl.worker"
-
 # One process = one job, so per-run context lives at module level (reset in run()).
 _CTX: dict[str, Any] = {"job_id": "unknown", "url": "", "downloaded": 0, "skipped": 0, "failed": 0}
-
-# gallery-dl ``python`` postprocessor: calls ``function(kwdict)`` on each event. We register one
-# per event we care about (prepare / file / skip). The function receives ``pathfmt.kwdict``, which
-# contains ``_path`` (full on-disk path) and ``filename``. Applied to all jobs incl. children.
-_POSTPROCESSORS = [
-    {"name": "python", "function": f"{_MOD}:on_prepare", "event": "prepare"},
-    {"name": "python", "function": f"{_MOD}:on_file", "event": "file"},
-    {"name": "python", "function": f"{_MOD}:on_skip", "event": "skip"},
-]
 
 
 def _now() -> float:
@@ -112,6 +102,28 @@ def on_skip(kwdict: dict[str, Any]) -> None:
         }
     )
     _emit_progress()
+
+
+# gallery-dl's ``python`` postprocessor resolves ``function`` via util.import_file, which calls
+# __import__ — and __import__ returns the TOP-LEVEL package for a dotted name, so a spec like
+# "gallery_dl_web.gallerydl.worker:on_file" resolves to the wrong module. Expose the callbacks
+# under a single-segment module name in sys.modules so __import__ resolves it directly.
+_HOOKS_MODULE = "gallery_dl_web_hooks"
+# Any-typed so plain attribute assignment is allowed (mypy skips attr checks on Any; ruff prefers
+# assignment over setattr).
+_hooks: Any = types.ModuleType(_HOOKS_MODULE)
+_hooks.on_prepare = on_prepare
+_hooks.on_file = on_file
+_hooks.on_skip = on_skip
+sys.modules[_HOOKS_MODULE] = _hooks
+
+# One PP per event; each calls the named function with pathfmt.kwdict (which has _path + filename).
+# Extractor-level config => gallery-dl applies these to EVERY job, including child jobs.
+_POSTPROCESSORS = [
+    {"name": "python", "function": f"{_HOOKS_MODULE}:on_prepare", "event": "prepare"},
+    {"name": "python", "function": f"{_HOOKS_MODULE}:on_file", "event": "file"},
+    {"name": "python", "function": f"{_HOOKS_MODULE}:on_skip", "event": "skip"},
+]
 
 
 def run(payload: dict[str, Any]) -> int:
