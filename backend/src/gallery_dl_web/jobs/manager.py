@@ -167,11 +167,7 @@ class JobManager:
     ) -> None:
         payload = self._build_payload(state, options, cookies)
         python = self._settings.worker_python or sys.executable
-        logger.info(
-            "spawning worker for job %s (ig-cookie=%s)",
-            state.id,
-            self._cookies.mask(cookies.get("sessionid")) if isinstance(cookies, dict) else "<file>",
-        )
+        logger.info("spawning worker for job %s (%s)", state.id, state.platform)
         proc = await spawn_worker(python, payload)
         stdout = proc.stdout
         assert stdout is not None
