@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>gallery-dl-web</title>
+    <style>
+      :root {
+        font-family: system-ui, -apple-system, Segoe UI, sans-serif;
+        color: #171717;
+      }
+      body {
+        width: 320px;
+        margin: 0;
+        padding: 16px;
+        background: #f6f7f9;
+      }
+      h1 {
+        font-size: 15px;
+        margin: 0 0 12px;
+      }
+      label {
+        display: block;
+        font-size: 12px;
+        font-weight: 600;
+        margin: 8px 0 4px;
+      }
+      input[type="text"] {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 6px 8px;
+        border: 1px solid #cfd4da;
+        border-radius: 6px;
+        font-size: 13px;
+      }
+      button {
+        display: block;
+        width: 100%;
+        margin-top: 10px;
+        padding: 9px;
+        border: 0;
+        border-radius: 7px;
+        font-size: 13px;
+        font-weight: 600;
+        color: #fff;
+        cursor: pointer;
+      }
+      button:disabled {
+        opacity: 0.6;
+        cursor: default;
+      }
+      .ig {
+        background: #d62976;
+      }
+      .fb {
+        background: #1877f2;
+      }
+      .link {
+        background: #374151;
+      }
+      #status {
+        margin-top: 12px;
+        font-size: 12px;
+        min-height: 18px;
+        white-space: pre-wrap;
+      }
+      .ok {
+        color: #157f3f;
+      }
+      .err {
+        color: #b42318;
+      }
+      .hint {
+        margin-top: 12px;
+        font-size: 11px;
+        color: #6b7280;
+        line-height: 1.4;
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+      }
+      .row button {
+        margin-top: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>📷 gallery-dl-web cookie sender</h1>
+
+    <label for="server">gallery-dl-web server URL</label>
+    <input id="server" type="text" placeholder="http://192.168.1.13:3100" />
+
+    <button id="ig" class="ig">Send Instagram session</button>
+    <button id="fb" class="fb">Send Facebook cookies</button>
+
+    <div class="row">
+      <button id="check" class="link">Check status</button>
+      <button id="clear" class="link">Clear both</button>
+    </div>
+
+    <div id="status"></div>
+
+    <p class="hint">
+      Reads <b>your own</b> logged-in cookies from this browser and sends them to the server URL
+      above. Log into instagram.com / facebook.com first. Re-click after IG/FB rotates the session.
+    </p>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

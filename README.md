@@ -32,18 +32,25 @@ important because this repo is public.
 
 ### 1. Configure cookies (required)
 
-gallery-dl disables password login for Instagram, so auth is cookie-based.
+gallery-dl disables password login for Instagram, so auth is cookie-based. You provide your own
+logged-in cookies — there are two ways:
 
-**Instagram** — copy the `sessionid` cookie:
-- Log into instagram.com in a desktop browser → DevTools → **Application** → **Cookies** →
-  `https://www.instagram.com` → copy the value of `sessionid` (HttpOnly, so via DevTools, not JS).
+**Option A — browser extension (recommended).** Load the [`extension/`](extension/README.md) folder
+unpacked in Chrome/Edge/Brave, set your gallery-dl-web server URL in its popup, then click
+**Send Instagram session** / **Send Facebook cookies** while logged into instagram.com / facebook.com.
+It reads **your own** cookies and sends them to the app — one click, refreshable when IG/FB rotates
+the session. See [`extension/README.md`](extension/README.md).
 
-**Facebook** — export a Netscape `cookies.txt`:
-- Use a browser extension (e.g. "Get cookies.txt LOCALLY") while logged into facebook.com.
-- ⚠️ Facebook cookies (`c_user` + `xs`) grant **full account access** — use a dedicated account.
+**Option B — manual paste (fallback).** Open the app's **Settings** page:
 
-Enter both in the **Settings** page of the running app. Values are stored only in the backend's
-`/data/cookies.json` (mode 0600, gitignored) and are never returned over the API.
+- **Instagram** — copy the `sessionid` cookie: log into instagram.com → DevTools → **Application**
+  → **Cookies** → copy `sessionid` (HttpOnly, so via DevTools, not JS).
+- **Facebook** — export a Netscape `cookies.txt` (e.g. with "Get cookies.txt LOCALLY") while logged
+  into facebook.com. ⚠️ FB cookies (`c_user` + `xs`) grant **full account access** — use a dedicated
+  account.
+
+Either way, values are stored only in the backend's `/data/cookies.json` (mode 0600, gitignored) and
+are never returned over the API.
 
 ### 2. Run it
 
@@ -66,6 +73,7 @@ gallery-dl-web/
 │   └── src/gallery_dl_web/{api,jobs,gallerydl,cookies,schemas}/
 ├── frontend/         # Next.js 16 + React 19 + Tailwind v4 + DaisyUI 5
 │   └── src/{app,components,lib}/
+├── extension/        # Manifest V3 browser extension — sends your IG/FB cookies to Settings
 ├── docs/event-contract.md   # the SSE JSON schema (pinned, shared by both services)
 ├── docker-compose.yml       # prod
 └── docker-compose.dev.yml   # dev overlay

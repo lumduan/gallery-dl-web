@@ -74,8 +74,12 @@ independently.
 - [ ] live download E2E with a **real** cookie (requires D1)
 
 ### D1 · Operator cookies — 🟥 DECISION
-- IG: DevTools → Application → Cookies → copy `sessionid`.
-- FB: export Netscape `cookies.txt` (use a burner account).
+- **Primary (new): browser extension** — load `extension/` unpacked, set the server URL, click
+  *Send Instagram session* / *Send Facebook cookies* while logged in. One-click refresh when the
+  session rotates. (Shipped as a follow-up after v0.1; feeds the same `PUT /api/settings/cookies`
+  endpoint as manual paste — no backend change.)
+- **Fallback: manual paste** — IG: DevTools → Application → Cookies → copy `sessionid`. FB: export
+  Netscape `cookies.txt` (use a burner account).
 
 ---
 
