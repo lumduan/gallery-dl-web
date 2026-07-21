@@ -98,9 +98,7 @@ def test_all_skipped_status8_is_completed(
 ) -> None:
     pf = FakePF("s.jpg", str(tmp_path / "s.jpg"))
 
-    monkeypatch.setattr(
-        worker.job, "DownloadJob", lambda url: FaithfulFakeJob(["skip"], 8, pf)
-    )
+    monkeypatch.setattr(worker.job, "DownloadJob", lambda url: FaithfulFakeJob(["skip"], 8, pf))
     _patch_common(monkeypatch)
 
     rc = worker.run(_payload())
@@ -115,9 +113,7 @@ def test_no_extractor_status64(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path
 ) -> None:
     pf = FakePF("x", str(tmp_path / "x"))
-    monkeypatch.setattr(
-        worker.job, "DownloadJob", lambda url: FaithfulFakeJob([], 64, pf)
-    )
+    monkeypatch.setattr(worker.job, "DownloadJob", lambda url: FaithfulFakeJob([], 64, pf))
     _patch_common(monkeypatch)
 
     rc = worker.run(_payload())
@@ -131,9 +127,7 @@ def test_error_hook_emits_nonfatal_error(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path
 ) -> None:
     pf = FakePF("e.jpg", str(tmp_path / "e.jpg"))
-    monkeypatch.setattr(
-        worker.job, "DownloadJob", lambda url: FaithfulFakeJob(["error"], 0, pf)
-    )
+    monkeypatch.setattr(worker.job, "DownloadJob", lambda url: FaithfulFakeJob(["error"], 0, pf))
     _patch_common(monkeypatch)
 
     worker.run(_payload())
