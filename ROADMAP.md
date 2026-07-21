@@ -64,11 +64,14 @@ independently.
 - Cookie forms never display stored values (booleans only).
 
 ### 4 · Integrate and ship — 🟡 ACTIVE
-- [x] `docker-compose.yml` (prod, ghcr images) + `docker-compose.dev.yml` (bind-mounts + reload)
+- [x] `docker-compose.yml` (prod, builds from source) + `docker-compose.dev.yml` (hot-reload overlay)
 - [x] GitHub Actions: `ci.yml` (backend + frontend quality), `docker-publish.yml` (ghcr on tag),
       `security.yml` (weekly bandit + pip-audit)
-- [ ] `docker compose up` smoke test (requires D1 for a real download)
-- [ ] tag `v0.1.0` → first ghcr publish
+- [x] Both images build; full pipeline smoke-tested end-to-end (frontend → catch-all proxy →
+      backend → worker subprocess → gallery-dl → JSON-lines → SSE → frontend), verified with a
+      fake cookie (job correctly reaches `failed/dl-failed` on the auth wall)
+- [ ] tag `v0.1.0` → first ghcr image publish (operator decision)
+- [ ] live download E2E with a **real** cookie (requires D1)
 
 ### D1 · Operator cookies — 🟥 DECISION
 - IG: DevTools → Application → Cookies → copy `sessionid`.

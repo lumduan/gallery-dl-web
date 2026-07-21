@@ -13,7 +13,9 @@ Two-service web app wrapping `gallery-dl` to download Instagram & Facebook image
 `POST /api/jobs` → `JobManager` spawns a subprocess `python -m gallery_dl_web.gallerydl.worker`, sends
 its config (incl. cookies) over **STDIN**, and streams the worker's JSON-lines stdout to SSE
 subscribers. One process per job isolates gallery-dl's global `config` state. Cookies never touch
-argv, disk, logs, or API responses (repo is public).
+argv, disk, logs, or API responses (repo is public). The Next.js frontend proxies `/api/*` to the
+backend via a catch-all route (`src/app/api/[...path]/route.ts`) that reads `BACKEND_URL` at request
+time — NOT `next.config` rewrites, which bake the destination in at build time.
 
 ## Commands
 Backend (`cd backend`): `uv sync --all-groups` · `uv run python -m gallery_dl_web` ·

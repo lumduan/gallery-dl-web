@@ -28,6 +28,36 @@ class FakePF:
         self.path = path
 
 
+class FaithfulFakeJob:
+    """Mimics gallery_dl.job.DownloadJob's hook lifecycle faithfully.
+
+    gallery-dl leaves ``self.hooks`` as an empty TUPLE after __init__; it only becomes a
+    defaultdict(list) inside initialize(). ``register_hooks`` indexes hooks by event name, so it
+    raises TypeError if hooks is still a tuple. This fake reproduces that, so the worker MUST set
+    ``j.hooks = defaultdict(list)`` before registering — exactly the bug we fixed.
+    """
+
+    def __init__(self, fire: list[str], status: int, pathfmt: Any) -> None:
+        self.hooks: Any = ()  # tuple, like the real job pre-initialize
+        self._fire = fire
+        self._status = status
+        self._pf = pathfmt
+
+    def register_hooks(self, hooks: dict[str, Any]) -> None:
+        # Identical indexing pattern to gallery_dl.job.DownloadJob.register_hooks.
+        for hook, callback in hooks.items():
+            self.hooks[hook].append(callback)
+
+    def run(self) -> int:
+        for event in self._fire:
+            for cb in self.hooks.get(event, []):
+                if event == "error":
+                    cb(self._pf, ValueError("boom"))
+                else:
+                    cb(self._pf)
+        return self._status
+
+
 def _patch_common(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(worker.config, "set", lambda *a: None)
     monkeypatch.setattr(worker.output, "initialize_logging", lambda lvl: None)
@@ -45,25 +75,14 @@ def test_success_emits_started_file_completed(
     f.write_bytes(b"x" * 42)
     pf = FakePF("f.jpg", str(f))
 
-    class FakeJob:
-        def __init__(self, url: str) -> None:
-            self.url = url
-            self.hooks: dict[str, Any] = {}
+    def make_job(url: str) -> FaithfulFakeJob:
+        return FaithfulFakeJob(fire=["prepare", "file"], status=0, pathfmt=pf)
 
-        def register_hooks(self, hooks: dict[str, Any]) -> None:
-            self.hooks.update(hooks)
-
-        def run(self) -> int:
-            self.hooks["prepare"](pf)
-            self.hooks["file"](pf)
-            return 0
-
-    monkeypatch.setattr(worker.job, "DownloadJob", FakeJob)
+    monkeypatch.setattr(worker.job, "DownloadJob", make_job)
     _patch_common(monkeypatch)
 
     rc = worker.run(_payload())
     assert rc == 0
-
     evs = _events(capsys)
     types = [e["type"] for e in evs]
     assert types[0] == "started"
@@ -79,18 +98,9 @@ def test_all_skipped_status8_is_completed(
 ) -> None:
     pf = FakePF("s.jpg", str(tmp_path / "s.jpg"))
 
-    class FakeJob:
-        def __init__(self, url: str) -> None:
-            self.hooks: dict[str, Any] = {}
-
-        def register_hooks(self, hooks: dict[str, Any]) -> None:
-            self.hooks.update(hooks)
-
-        def run(self) -> int:
-            self.hooks["skip"](pf)
-            return 8
-
-    monkeypatch.setattr(worker.job, "DownloadJob", FakeJob)
+    monkeypatch.setattr(
+        worker.job, "DownloadJob", lambda url: FaithfulFakeJob(["skip"], 8, pf)
+    )
     _patch_common(monkeypatch)
 
     rc = worker.run(_payload())
@@ -102,19 +112,12 @@ def test_all_skipped_status8_is_completed(
 
 
 def test_no_extractor_status64(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path
 ) -> None:
-    class FakeJob:
-        def __init__(self, url: str) -> None:
-            pass
-
-        def register_hooks(self, hooks: dict[str, Any]) -> None:
-            pass
-
-        def run(self) -> int:
-            return 64
-
-    monkeypatch.setattr(worker.job, "DownloadJob", FakeJob)
+    pf = FakePF("x", str(tmp_path / "x"))
+    monkeypatch.setattr(
+        worker.job, "DownloadJob", lambda url: FaithfulFakeJob([], 64, pf)
+    )
     _patch_common(monkeypatch)
 
     rc = worker.run(_payload())
@@ -124,11 +127,26 @@ def test_no_extractor_status64(
     assert evs[-1]["reason"] == "no-extractor"
 
 
+def test_error_hook_emits_nonfatal_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path
+) -> None:
+    pf = FakePF("e.jpg", str(tmp_path / "e.jpg"))
+    monkeypatch.setattr(
+        worker.job, "DownloadJob", lambda url: FaithfulFakeJob(["error"], 0, pf)
+    )
+    _patch_common(monkeypatch)
+
+    worker.run(_payload())
+    evs = _events(capsys)
+    err = next(e for e in evs if e["type"] == "error")
+    assert err["fatal"] is False
+    assert err["message"] == "boom"
+
+
 def test_config_error_emits_failed(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     _patch_common(monkeypatch)
-    # No sessionid -> config_builder raises -> worker emits failed.
     rc = worker.run(_payload(cookies={}, platform="instagram"))
     assert rc == 2
     evs = _events(capsys)
@@ -137,9 +155,7 @@ def test_config_error_emits_failed(
     assert "sessionid" in evs[-1]["message"]
 
 
-def test_preview_uses_datajob(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_preview_uses_datajob(monkeypatch: pytest.MonkeyPatch) -> None:
     called: dict[str, Any] = {}
 
     class FakeDJ:
@@ -155,7 +171,6 @@ def test_preview_uses_datajob(
     class FakeDataJob:
         def __init__(self, url: str) -> None:
             called["data"] = self
-            self.hooks: dict[str, Any] = {}
 
         def register_hooks(self, hooks: dict[str, Any]) -> None:
             self.hooks = hooks

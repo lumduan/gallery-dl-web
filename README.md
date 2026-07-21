@@ -5,7 +5,7 @@ A small web app to download **Instagram** and **Facebook** images by wrapping th
 download the results — packaged as two containers (FastAPI + Next.js).
 
 ```
-Browser ──► Next.js :3000 ──(rewrite /api/*)──► FastAPI :8000
+Browser ──► Next.js :3000 ──(proxy /api/*)──► FastAPI :8000
    ▲ EventSource (SSE)                            │
    └──────────────────────────────────────────────┤
                                                   ▼

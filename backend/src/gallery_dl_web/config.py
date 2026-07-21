@@ -6,8 +6,10 @@ they are managed at runtime via the Settings UI and stored only in ``cookies_pat
 """
 
 from pathlib import Path
+from typing import Annotated
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -15,8 +17,6 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
-        # allow list[str] to be read from a comma-separated env var
-        env_parse_none_str="",
     )
 
     app_env: str = "development"
@@ -28,7 +28,9 @@ class Settings(BaseSettings):
     downloads_dir: Path = Path("/data/downloads")
     cookies_path: Path = Path("/data/cookies.json")
 
-    cors_origins: list[str] = [
+    # NoDecode stops pydantic-settings from JSON-parsing the env var; the validator below splits it
+    # as a comma-separated list. (Code callers may still pass a list directly.)
+    cors_origins: Annotated[list[str], NoDecode] = [
         "http://localhost:3000",
         "http://127.0.0.1:3000",
     ]
@@ -37,6 +39,13 @@ class Settings(BaseSettings):
     # Interpreter used to spawn the per-job gallery-dl worker subprocess.
     # Empty string -> resolved to sys.executable at runtime.
     worker_python: str = ""
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def _split_cors_origins(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [origin.strip() for origin in value.split(",") if origin.strip()]
+        return value
 
 
 def get_settings() -> Settings:

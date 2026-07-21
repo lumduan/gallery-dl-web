@@ -104,10 +104,8 @@ class JobManager:
             async with self._semaphore:
                 state.status = JobStatus.RUNNING
                 state.started_at = time.time()
-                await self._emit(
-                    state,
-                    {"type": "started", "job_id": state.id, "url": state.url, "ts": time.time()},
-                )
+                # The worker emits the authoritative "started" event (per the event contract);
+                # we only flip the internal status here to avoid a duplicate on the wire.
 
                 cookies = self._cookies.get_for_platform(state.platform)
                 if not cookies:

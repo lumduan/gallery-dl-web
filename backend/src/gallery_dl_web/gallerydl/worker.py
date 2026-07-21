@@ -14,6 +14,7 @@ exactly one terminal event (``completed`` or ``failed``) last, even on exception
 
 from __future__ import annotations
 
+import collections
 import contextlib
 import json
 import logging
@@ -127,6 +128,12 @@ def run(
         emit({"type": "started", "url": url})
 
         j = job.DataJob(url) if preview else job.DownloadJob(url)
+        # gallery-dl leaves Job.hooks as an empty tuple after __init__; it only becomes a
+        # defaultdict(list) inside initialize() (during run()), and only when postprocessors are
+        # configured. register_hooks indexes hooks by event name, so we must initialize it here.
+        # With no postprocessors configured, run()->initialize() does not reset it, so our hooks
+        # persist and fire normally.
+        j.hooks = collections.defaultdict(list)
         j.register_hooks(
             {"prepare": hook_prepare, "file": hook_file, "skip": hook_skip, "error": hook_error}
         )
