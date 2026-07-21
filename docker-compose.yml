@@ -1,0 +1,45 @@
+# Production: build both services from source. Only the frontend is exposed to the host;
+# the backend is reachable via Docker DNS (frontend proxies /api/* to it).
+name: gallery-dl-web
+
+services:
+  backend:
+    build: ./backend
+    image: ghcr.io/lumduan/gallery-dl-web-backend:latest
+    restart: unless-stopped
+    environment:
+      DATA_DIR: /data
+      DOWNLOADS_DIR: /data/downloads
+      COOKIES_PATH: /data/cookies.json
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      MAX_CONCURRENT_JOBS: ${MAX_CONCURRENT_JOBS:-2}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - gallery-data:/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health').status==200 else 1)",
+        ]
+      interval: 15s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+  frontend:
+    build: ./frontend
+    image: ghcr.io/lumduan/gallery-dl-web-frontend:latest
+    restart: unless-stopped
+    environment:
+      BACKEND_URL: http://backend:8000
+    ports:
+      - "${FRONTEND_HOST_PORT:-3000}:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  gallery-data:

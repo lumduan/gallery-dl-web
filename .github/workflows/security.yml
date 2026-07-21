@@ -1,0 +1,48 @@
+name: Security
+
+on:
+  schedule:
+    - cron: "23 3 * * 3" # Wed 03:23 UTC
+  push:
+    branches: [main]
+    paths:
+      - "backend/pyproject.toml"
+      - "backend/uv.lock"
+      - ".github/workflows/security.yml"
+  workflow_dispatch:
+
+jobs:
+  bandit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - run: uv sync --frozen --all-groups
+      - run: uv run bandit -r src -f json -o bandit-report.json || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bandit-report
+          path: backend/bandit-report.json
+
+  pip-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - run: uv sync --frozen --all-groups
+      - run: uv run pip-audit

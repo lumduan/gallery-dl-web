@@ -1,0 +1,75 @@
+[project]
+name = "gallery-dl-web"
+version = "0.1.0"
+description = "Web UI (FastAPI + Next.js) that wraps gallery-dl to download Instagram & Facebook images."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.12"
+authors = [{ name = "lumduan", email = "lumduan@users.noreply.github.com" }]
+keywords = ["gallery-dl", "instagram", "facebook", "downloader", "fastapi"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "fastapi[standard]>=0.115",
+    "uvicorn[standard]>=0.30",
+    "sse-starlette>=2.1",
+    "pydantic-settings>=2.5",
+    "gallery-dl>=1.28",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.6",
+    "mypy>=1.10",
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=5",
+    "httpx>=0.27",
+    "pre-commit>=3.7",
+    "bandit>=1.7",
+    "pip-audit>=2.7",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gallery_dl_web"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["B008"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
+mypy_path = "src"
+# Type-check src/ strictly. Tests are covered by pytest + ruff; fixture-typed test functions
+# don't fit mypy --strict, so we scope mypy to src.
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = ["--cov=src", "--cov-report=term-missing", "--cov-fail-under=80"]
+
+[tool.coverage.run]
+source = ["src"]
+branch = true
+
+[tool.bandit]
+exclude_dirs = ["tests", ".venv"]
+
+[tool.uv]
+default-groups = ["dev"]
