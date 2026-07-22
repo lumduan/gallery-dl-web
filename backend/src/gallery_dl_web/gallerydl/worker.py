@@ -68,6 +68,20 @@ def _emit_progress() -> None:
     )
 
 
+def _path_str(kwdict: dict[str, Any]) -> str | None:
+    """Resolve the on-disk path from gallery-dl metadata to a plain string.
+
+    ``kwdict['_path']`` may be a string (some extractors) or a gallery-dl PathFormat object
+    (e.g. Facebook) which is not JSON-serializable.
+    """
+    p = kwdict.get("_path")
+    if p is None:
+        return None
+    if isinstance(p, str):
+        return p
+    return str(getattr(p, "path", p))
+
+
 def on_prepare(kwdict: dict[str, Any]) -> None:
     """Postprocessor callback: a file's metadata was resolved, about to fetch."""
     _emit({"type": "prepare", "filename": kwdict.get("filename"), "url": _CTX["url"]})
@@ -75,7 +89,7 @@ def on_prepare(kwdict: dict[str, Any]) -> None:
 
 def on_file(kwdict: dict[str, Any]) -> None:
     """Postprocessor callback: a file was downloaded."""
-    path = kwdict.get("_path")
+    path = _path_str(kwdict)
     _CTX["downloaded"] += 1
     _emit(
         {
@@ -83,7 +97,7 @@ def on_file(kwdict: dict[str, Any]) -> None:
             "event": "downloaded",
             "path": path,
             "filename": kwdict.get("filename"),
-            "bytes": _file_size(path) if path else None,
+            "bytes": _file_size(path),
         }
     )
     _emit_progress()
@@ -91,7 +105,7 @@ def on_file(kwdict: dict[str, Any]) -> None:
 
 def on_skip(kwdict: dict[str, Any]) -> None:
     """Postprocessor callback: a file was skipped (already in the archive)."""
-    path = kwdict.get("_path")
+    path = _path_str(kwdict)
     _CTX["skipped"] += 1
     _emit(
         {

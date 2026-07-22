@@ -19,8 +19,12 @@ STATUS_OS_ERROR = 128
 
 
 def emit(event: dict[str, Any]) -> None:
-    """Write one event as a JSON line to stdout and flush."""
-    sys.stdout.write(json.dumps(event, separators=(",", ":")))
+    """Write one event as a JSON line to stdout and flush.
+
+    ``default=str`` is a safety net: gallery-dl metadata can contain non-JSON objects (e.g. a
+    PathFormat), which would otherwise raise and kill the event. Coerce them to str.
+    """
+    sys.stdout.write(json.dumps(event, default=str, separators=(",", ":")))
     sys.stdout.write("\n")
     sys.stdout.flush()
 

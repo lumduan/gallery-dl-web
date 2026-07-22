@@ -82,6 +82,28 @@ def test_on_file_downloaded(capsys: pytest.CaptureFixture[str], tmp_path) -> Non
     assert evs[1]["downloaded"] == 1 and evs[1]["skipped"] == 0
 
 
+class _FakePathFormat:
+    """Stand-in for gallery-dl's PathFormat (non-str, has a .path attr, not JSON-serializable)."""
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+
+    def __str__(self) -> str:
+        return self.path
+
+
+def test_on_file_handles_non_str_pathformat(capsys: pytest.CaptureFixture[str], tmp_path) -> None:
+    """Regression: Facebook's kwdict['_path'] is a PathFormat object, not a string."""
+    _reset_ctx()
+    f = tmp_path / "a.jpg"
+    f.write_bytes(b"x" * 7)
+    worker.on_file({"_path": _FakePathFormat(str(f)), "filename": "a.jpg"})
+    evs = _events(capsys)
+    assert evs[0]["type"] == "file"
+    assert evs[0]["path"] == str(f)  # resolved to a plain string
+    assert evs[0]["bytes"] == 7
+
+
 def test_on_skip_emits_skipped_and_progress(capsys: pytest.CaptureFixture[str]) -> None:
     _reset_ctx()
     worker.on_file({"_path": "/x/a.jpg", "filename": "a.jpg"})  # downloaded=1 first
