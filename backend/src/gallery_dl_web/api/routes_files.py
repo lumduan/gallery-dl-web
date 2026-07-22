@@ -22,12 +22,12 @@ _HIDDEN_SUFFIXES = (".sqlite", ".sqlite-journal", ".sqlite-wal", ".sqlite-shm", 
 
 
 def _resolve_within(base: Path, rel: str) -> Path:
-    candidate = (base / rel).resolve()
+    from gallery_dl_web.api.paths import resolve_within
+
     try:
-        candidate.relative_to(base.resolve())
+        return resolve_within(base, rel)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="invalid path") from exc
-    return candidate
 
 
 @router.get("", response_model=FileListResponse)

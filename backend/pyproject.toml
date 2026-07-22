@@ -19,6 +19,7 @@ dependencies = [
     "sse-starlette>=2.1",
     "pydantic-settings>=2.5",
     "gallery-dl>=1.28",
+    "Pillow>=10.0",
 ]
 
 [dependency-groups]

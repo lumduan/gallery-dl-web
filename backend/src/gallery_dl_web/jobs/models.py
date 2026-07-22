@@ -33,6 +33,9 @@ class JobState:
     events: deque[dict[str, Any]] = field(default_factory=lambda: deque(maxlen=_EVENT_HISTORY))
     subscribers: set[asyncio.Queue[dict[str, Any]]] = field(default_factory=set)
     final_summary: dict[str, Any] | None = None
+    # Per-profile archive path used for this job (so delete can remove it even though gallery-dl's
+    # {username} folder name != the URL-derived archive key). Set in _build_payload.
+    archive_path: str | None = None
 
     @property
     def is_terminal(self) -> bool:

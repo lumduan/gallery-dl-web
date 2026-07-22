@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     # Empty string -> resolved to sys.executable at runtime.
     worker_python: str = ""
 
+    # Profile-management knobs.
+    zip_ttl_seconds: int = 300  # how long a generated profile .zip lives after last access
+    thumbnail_size: int = 300  # longest-side px for generated thumbnails
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _split_cors_origins(cls, value: object) -> object:

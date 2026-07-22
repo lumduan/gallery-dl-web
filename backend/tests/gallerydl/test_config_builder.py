@@ -70,6 +70,20 @@ def test_archive_option_set() -> None:
     assert fake.as_dict()[(("extractor", "instagram"), "archive")] == "/a/ig.sqlite"
 
 
+def test_avatar_include_appended() -> None:
+    fake = FakeConfig()
+    config_builder.apply(_ig(options={"include_avatar": True}), fake)
+    inc = fake.as_dict()[(("extractor", "instagram"), "include")]
+    assert "avatar" in inc.split(",")
+
+
+def test_avatar_include_idempotent() -> None:
+    fake = FakeConfig()
+    config_builder.apply(_ig(options={"include_avatar": True, "include": "posts,avatar"}), fake)
+    inc = fake.as_dict()[(("extractor", "instagram"), "include")]
+    assert inc.count("avatar") == 1
+
+
 def test_facebook_defaults() -> None:
     fake = FakeConfig()
     config_builder.apply(_fb(), fake)

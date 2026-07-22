@@ -107,16 +107,13 @@ async def job_events(
 
 
 def _resolve_within(base: Path, rel: str) -> Path:
-    """Resolve ``rel`` under ``base`` and reject path traversal.
+    """Resolve rel under base; reject path traversal with HTTPException."""
+    from gallery_dl_web.api.paths import resolve_within
 
-    Raises HTTPException on violation.
-    """
-    candidate = (base / rel).resolve()
     try:
-        candidate.relative_to(base.resolve())
+        return resolve_within(base, rel)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="invalid path") from exc
-    return candidate
 
 
 @router.get("/jobs/{job_id}/zip")

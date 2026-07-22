@@ -86,6 +86,15 @@ def apply(payload: dict[str, Any], config: ConfigLike) -> list[tuple[ConfigPath,
     for key, default in _PLATFORM_DEFAULTS[platform].items():
         _set(platform_path, key, options.get(key, default))
 
+    # Avatar: when requested (profile downloads), append 'avatar' to include (idempotent) so
+    # gallery-dl also fetches the profile picture for the card.
+    if options.get("include_avatar"):
+        resolved_include = options.get("include", _PLATFORM_DEFAULTS[platform]["include"])
+        parts = [p.strip() for p in str(resolved_include).split(",") if p.strip()]
+        if "avatar" not in parts:
+            parts.append("avatar")
+        _set(platform_path, "include", ",".join(parts))
+
     if options.get("archive"):
         _set(platform_path, "archive", str(options["archive"]))
 

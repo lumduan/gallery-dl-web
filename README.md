@@ -70,7 +70,7 @@ Open <http://localhost:3000>, paste a public IG/FB URL, and watch it download.
 ```
 gallery-dl-web/
 ├── backend/          # FastAPI + gallery-dl (uv, src-layout, ruff, mypy-strict, pytest ≥80%)
-│   └── src/gallery_dl_web/{api,jobs,gallerydl,cookies,schemas}/
+│   └── src/gallery_dl_web/{api,jobs,gallerydl,cookies,profiles,schemas}/
 ├── frontend/         # Next.js 16 + React 19 + Tailwind v4 + DaisyUI 5
 │   └── src/{app,components,lib}/
 ├── extension/        # Manifest V3 browser extension — sends your IG/FB cookies to Settings
@@ -112,7 +112,27 @@ npm run typecheck && npm run lint
 | PUT    | `/api/settings/cookies`      | Set IG `sessionid` / FB cookies.txt      |
 | GET    | `/api/files`                 | List downloaded files                    |
 | GET    | `/api/files/download?path=`  | Download one file (path-traversal-safe)  |
+| GET    | `/api/profiles`              | List profiles (avatar, image/video counts) |
+| GET    | `/api/profiles/{p}/{name}`   | Profile metadata + per-file thumb/file URLs |
+| GET    | `/api/profiles/{p}/{name}/thumb/{file}` | Generated thumbnail (Pillow, cached) |
+| GET    | `/api/profiles/{p}/{name}/file/{file}`  | Full-size file                        |
+| GET    | `/api/profiles/{p}/{name}/zip` | Profile .zip (auto-deleted after `ZIP_TTL_SECONDS`) |
+| DELETE | `/api/profiles/{p}/{name}`   | Delete profile (files + archive + metadata) |
 | GET    | `/health`                    | `{"status":"ok"}`                        |
+
+## Profile management
+
+Downloads are organized per profile under `<DOWNLOADS_DIR>/<platform>/<username>/` (gallery-dl's
+`{username}` template). Each profile is indexed in a `metadata.json` (under `<DATA_DIR>/profiles/`,
+not in `downloads/`) with image/video counts and file list, rebuilt automatically after each job.
+
+- **Incremental**: re-downloading a profile only fetches new media (per-profile gallery-dl archive).
+- **Gallery UI**: the **Profiles** page shows a card per profile (avatar + name + counts); click a
+  card for a thumbnail grid (Pillow thumbnails, generated on demand). Click a thumbnail for the full
+  image; **Download .zip** builds `<name>.zip` (auto-deleted `ZIP_TTL_SECONDS` after last access);
+  **Delete profile** removes files + per-profile archive + metadata to free storage.
+- **Config**: `DOWNLOADS_DIR` (where media lives), `ZIP_TTL_SECONDS` (default 300),
+  `THUMBNAIL_SIZE` (default 300) — see `.env.example`.
 
 ## Security
 

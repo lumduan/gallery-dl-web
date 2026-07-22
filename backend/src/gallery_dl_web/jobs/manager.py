@@ -20,12 +20,15 @@ import json
 import logging
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
 from gallery_dl_web.config import Settings
 from gallery_dl_web.cookies.store import CookieStore
 from gallery_dl_web.jobs.models import JobState, JobStatus
 from gallery_dl_web.jobs.worker_runner import spawn_worker
+from gallery_dl_web.profiles.store import ProfileStore
+from gallery_dl_web.profiles.urls import extract_username
 
 logger = logging.getLogger(__name__)
 
@@ -47,9 +50,15 @@ def _token() -> str:
 
 
 class JobManager:
-    def __init__(self, settings: Settings, cookie_store: CookieStore) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        cookie_store: CookieStore,
+        profile_store: ProfileStore | None = None,
+    ) -> None:
         self._settings = settings
         self._cookies = cookie_store
+        self._profiles = profile_store
         self._jobs: dict[str, JobState] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._semaphore = asyncio.BoundedSemaphore(max(1, settings.max_concurrent_jobs))
@@ -158,6 +167,25 @@ class JobManager:
         finally:
             state.ended_at = time.time()
             self._tasks.pop(state.id, None)
+            if self._profiles is not None and state.is_terminal:
+                await self._reconcile_profile(state)
+
+    async def _reconcile_profile(self, state: JobState) -> None:
+        """After a job, rebuild the affected profile's metadata.json. Never fails the job."""
+        paths = state.downloaded_paths()
+        if not paths or self._profiles is None:
+            return
+        try:
+            rel = Path(paths[0]).resolve().relative_to(self._settings.downloads_dir.resolve())
+            platform, name = rel.parts[0], rel.parts[1]
+        except (ValueError, IndexError):
+            return
+        if platform not in {"instagram", "facebook"} or not name:
+            return
+        try:
+            await self._profiles.reconcile(platform, name, archive_path=state.archive_path)
+        except Exception:  # noqa: BLE001
+            logger.exception("metadata reconcile failed for %s/%s", platform, name)
 
     async def _spawn_and_stream(
         self,
@@ -213,9 +241,20 @@ class JobManager:
     ) -> dict[str, Any]:
         merged = dict(options)
         archive_dir = self._settings.data_dir / "archive"
-        with contextlib.suppress(OSError):
-            archive_dir.mkdir(parents=True, exist_ok=True)
-        merged.setdefault("archive", str(archive_dir / f"{state.platform}.sqlite"))
+        # Per-profile archive (so a profile can be deleted + re-downloaded cleanly). Falls back to
+        # the shared per-platform archive when the URL exposes no username.
+        username = extract_username(state.url, state.platform)
+        if username:
+            archive_subdir = archive_dir / state.platform
+            with contextlib.suppress(OSError):
+                archive_subdir.mkdir(parents=True, exist_ok=True)
+            merged.setdefault("archive", str(archive_subdir / f"{username}.sqlite"))
+            merged.setdefault("include_avatar", True)
+        else:
+            with contextlib.suppress(OSError):
+                archive_dir.mkdir(parents=True, exist_ok=True)
+            merged.setdefault("archive", str(archive_dir / f"{state.platform}.sqlite"))
+        state.archive_path = merged.get("archive")
         return {
             "job_id": state.id,
             "url": state.url,
