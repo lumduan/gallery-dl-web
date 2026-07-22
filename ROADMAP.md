@@ -11,7 +11,7 @@ flowchart TD
     P1 --> P3["3 · Frontend<br/>DONE"]
     P2 --> P4["4 · Integrate and ship<br/>ACTIVE"]
     P3 --> P4
-    D1["D1 · Operator gets cookies<br/>DECISION"] --> P4
+    D1["D1 · Operator gets cookies<br/>DONE"] --> P4
 
     classDef done     fill:#d4f4dd,stroke:#2d8a4e,color:#1a5c33
     classDef active   fill:#fff3cd,stroke:#cc9a06,color:#7a5c04
@@ -21,7 +21,7 @@ flowchart TD
     class P2 done
     class P3 done
     class P4 active
-    class D1 decision
+    class D1 done
 ```
 
 | Phase | Status | What it is | Blocker |
@@ -29,13 +29,13 @@ flowchart TD
 | **1 · Foundation** | ✅ DONE | Public repo `lumduan/gallery-dl-web`; monorepo scaffold (backend from `python-template` + Next.js); both Dockerfiles; `.gitignore`/LICENSE/README; pinned SSE event contract (`docs/event-contract.md`) | — |
 | **2 · Backend crux** | ✅ DONE | gallery-dl subprocess worker (STDIN config → JSON-lines hooks), asyncio `JobManager` (fan-out + history replay), SSE route, cookie store, settings/files/health routes; ruff/mypy clean, pytest **89.8%** coverage | — |
 | **3 · Frontend** | ✅ DONE | Next.js pages: `/` (URL input + platform detect), `/jobs/[id]` (SSE progress + zip), `/settings` (cookies), `/downloads`; `EventSource` consumer; `next.config` rewrite. typecheck + lint + build green | — |
-| **4 · Integrate and ship** | 🟡 ACTIVE | `docker-compose` (dev + prod); ghcr publish workflow; first release tag; live E2E verification | needs D1 for live E2E; otherwise just finishing the release |
-| **D1 · Operator cookies** | 🟥 DECISION | Obtain a real IG `sessionid` + FB cookies.txt to verify end-to-end against a live URL | operator action, any time |
+| **4 · Integrate and ship** | 🟡 ACTIVE | `docker-compose` (dev + prod + host-dir overlay); ghcr publish workflow; **live E2E verified** (real cookies, 1423 files across 3 profiles); first release tag outstanding | none — just tagging |
+| **D1 · Operator cookies** | ✅ DONE | Real IG `sessionid` + FB cookies in use; live downloads confirmed 2026-07-23 | — |
 
-> **The only remaining bottleneck is OPERATOR ACTION (D1 — obtaining valid cookies) and TIME.** All
-> build work (P1–P3) is done; P4 is finishing the release plumbing. The backend is fully unit-tested
-> with a fake `DownloadJob` (no network needed), so it is verified regardless of D1; D1 only gates
-> the optional live-network smoke test.
+> **P1–P3 are done and D1 is closed — live E2E now passes against real Instagram and Facebook
+> profiles.** The only thing left in P4 is tagging `v0.1.0`. Note that Facebook rate-limits an
+> account after a few hundred images in one run ("temporarily blocked from viewing images"); that
+> is a platform limit, not a defect, and the job now reports it verbatim.
 
 ---
 
@@ -70,10 +70,14 @@ independently.
 - [x] Both images build; full pipeline smoke-tested end-to-end (frontend → catch-all proxy →
       backend → worker subprocess → gallery-dl → JSON-lines → SSE → frontend), verified with a
       fake cookie (job correctly reaches `failed/dl-failed` on the auth wall)
+- [x] `docker-compose.hostdir.yml` — opt-in overlay to bind-mount a host/NAS directory for media
+      (setting `DOWNLOADS_DIR` alone does nothing; the path must also exist inside the container)
+- [x] Stall detection reworked into two independent deadlines (liveness vs progress) after the
+      original 90 s single deadline was found killing healthy jobs mid-enumeration
+- [x] live download E2E with **real** cookies — 1423 files / 0.84 GB across 3 profiles
 - [ ] tag `v0.1.0` → first ghcr image publish (operator decision)
-- [ ] live download E2E with a **real** cookie (requires D1)
 
-### D1 · Operator cookies — 🟥 DECISION
+### D1 · Operator cookies — ✅ DONE
 - **Primary (new): browser extension** — load `extension/` unpacked, set the server URL, click
   *Send Instagram session* / *Send Facebook cookies* while logged in. One-click refresh when the
   session rotates. (Shipped as a follow-up after v0.1; feeds the same `PUT /api/settings/cookies`

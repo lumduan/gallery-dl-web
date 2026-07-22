@@ -42,6 +42,10 @@ class JobState:
     first_file_ts: float | None = None
     last_file_ts: float | None = None
     file_count: int = 0
+    # Last sign that gallery-dl is actively working through files — a `prepare` counts, not just a
+    # completed `file`. Observed in the wild: 90 prepares in 60s with no file event (items resolved
+    # but filtered out), which a file-only clock reads as "stalled" and kills a healthy job.
+    last_activity_ts: float | None = None
 
     @property
     def is_terminal(self) -> bool:

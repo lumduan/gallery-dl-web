@@ -44,10 +44,23 @@ class Settings(BaseSettings):
     zip_ttl_seconds: int = 300  # how long a generated profile .zip lives after last access
     thumbnail_size: int = 300  # longest-side px for generated thumbnails
 
-    # Stall detection + retry (a download with no file events for longer than "normal" is killed
-    # and retried). Threshold = clamp(floor*backoff**attempt, multiplier*avg_inter_file, cap).
+    # Stall detection + retry. Two independent deadlines (see jobs/manager.py):
+    #   * LIVENESS  — no line at all on worker stdout (not even a heartbeat) => the process is
+    #     wedged (blocked pipe, deadlock). Short.
+    #   * PROGRESS  — no *file* event. Before the first file this is the WARM-UP budget (gallery-dl
+    #     is enumerating a profile and is legitimately silent for minutes — Instagram alone sleeps
+    #     6-12s between requests). After the first file it is
+    #     clamp(floor*backoff**attempt, multiplier*avg_inter_file, cap).
     http_timeout_seconds: float = 30.0  # gallery-dl extractor.timeout (per-request deadline)
-    stall_floor_seconds: float = 90.0  # warmup / minimum threshold before any file arrives
+    heartbeat_seconds: float = 15.0  # worker heartbeat interval (0 disables)
+    stall_liveness_seconds: float = 60.0  # max silence incl. heartbeats before declaring a wedge
+    stall_warmup_seconds: float = 600.0  # time-to-FIRST-file budget (extraction/enumeration)
+    stall_warmup_max_retries: int = 1  # a warm-up timeout rarely benefits from more retries
+    # Minimum steady-state threshold (after activity starts). Deliberately generous: a real wedge
+    # is caught by the liveness check within stall_liveness_seconds, so the cost of a loose floor
+    # is small, while a tight one kills healthy jobs (a live IG run went 90s between file events
+    # while happily emitting `prepare`s).
+    stall_floor_seconds: float = 300.0
     stall_multiplier: float = 4.0  # threshold scales with the running avg inter-file time
     stall_cap_seconds: float = 600.0  # max threshold
     stall_max_retries: int = 2  # retry a stalled download this many times before failing

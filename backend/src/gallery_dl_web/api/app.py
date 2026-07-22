@@ -28,6 +28,17 @@ from gallery_dl_web.profiles.store import ProfileStore
 logger = logging.getLogger(__name__)
 
 
+class _SuppressHealthAccessLogs(logging.Filter):
+    """Drop successful /health access-log lines.
+
+    The container healthcheck polls every 15s. At INFO that buries every real warning — during one
+    incident the single 'could not create path' line was lost among hundreds of these.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not (record.args and "/health" in str(record.args))
+
+
 async def _gc_loop(manager: JobManager) -> None:
     while True:
         await asyncio.sleep(300)
@@ -71,6 +82,7 @@ async def _zip_ttl_loop(settings: Settings) -> None:
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings: Settings = app.state.settings
     logging.basicConfig(level=settings.log_level.upper())
+    logging.getLogger("uvicorn.access").addFilter(_SuppressHealthAccessLogs())
     for path in (
         settings.downloads_dir,
         settings.data_dir / "archive",
@@ -83,6 +95,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             path.mkdir(parents=True, exist_ok=True)
         except OSError:
             logger.warning("could not create path %s", path)
+
+    # The downloads dir is the one path a misconfiguration can silently break: point DOWNLOADS_DIR
+    # at a host path that was never bind-mounted and every job fails deep inside gallery-dl. Say so
+    # loudly at startup — jobs also refuse to spawn (see JobManager._downloads_dir_problem).
+    if not os.access(settings.downloads_dir, os.W_OK):
+        logger.error(
+            "downloads dir %s is missing or not writable by this user — downloads WILL fail. "
+            "If it is a host path, check that it is bind-mounted into the container.",
+            settings.downloads_dir,
+        )
 
     app.state.cookie_store.load()
     gc_task = asyncio.create_task(_gc_loop(app.state.job_manager))

@@ -1,0 +1,37 @@
+# Optional overlay — put downloaded media on a HOST directory (e.g. a NAS share) instead of the
+# `gallery-data` named volume.
+#
+# The backend writes to whatever DOWNLOADS_DIR says. Setting that variable alone is NOT enough:
+# the path also has to exist *inside* the container, which means bind-mounting it. Without this
+# overlay the app logs "downloads dir ... is not writable" at startup and every job fails with
+# reason `downloads-dir-unwritable`.
+#
+# Enable by setting BOTH in .env (compose reads COMPOSE_FILE automatically, so the plain
+# `docker compose up -d` keeps working):
+#
+#   DOWNLOADS_DIR=/mnt/downloads/gallery
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.hostdir.yml
+#
+# For the dev stack, pass it explicitly (docker-compose.dev.yml is standalone):
+#   docker compose -f docker-compose.dev.yml -f docker-compose.hostdir.yml up
+#
+# Notes
+#   * The mount is an identity bind (same path inside and out) so paths in events, metadata.json
+#     and logs mean the same thing on both sides.
+#   * The host directory AND every subdirectory must be writable by UID 1001 (the non-root app
+#     user). Watch out when seeding it with existing media: copying as root onto an NFS export
+#     with `root_squash` lands the tree as nobody:nogroup mode 0755. Reads then succeed — so
+#     already-archived files report `skipped` and the job looks healthy — while every actual
+#     download fails. Copy as UID 1001, or fix it afterwards:
+#         sudo chmod -R a+rwX <dir>          # root is squashed to the owning uid, so this works
+#     The backend refuses to start a job when it detects this (reason `downloads-dir-unwritable`).
+#   * If it lives under an autofs/NFS mount, make sure the share is actually mounted BEFORE
+#     starting the stack — otherwise Docker binds the empty trigger directory and the container
+#     never sees the real share. `ls <dir>` first, then `docker compose up -d`.
+#   * DATA_DIR stays on the named volume: cookies, archives, thumbnails and profile metadata are
+#     small and are deliberately kept out of the media directory.
+
+services:
+  backend:
+    volumes:
+      - ${DOWNLOADS_DIR:?DOWNLOADS_DIR must be set to use the host-directory overlay}:${DOWNLOADS_DIR}

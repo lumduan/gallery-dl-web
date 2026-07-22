@@ -15,6 +15,11 @@ async def spawn_worker(
     Uses ``create_subprocess_exec`` (not shell) so the cookie-bearing payload is never interpreted
     by a shell. The payload is written and stdin is closed before returning; the worker then runs
     to completion writing JSON-lines to stdout.
+
+    stderr is a separate pipe (it carries gallery-dl's own logging, which must never pollute the
+    JSON stream on stdout). **The caller MUST drain it** — see ``JobManager._drain_stderr``. An
+    undrained pipe fills at ~64 KB and blocks the worker mid-write, which looks exactly like a
+    stalled download.
     """
     proc = await asyncio.create_subprocess_exec(
         python_executable,

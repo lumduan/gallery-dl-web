@@ -7,6 +7,7 @@ single source of truth for the wire format — see ``docs/event-contract.md``.
 
 import json
 import sys
+import threading
 from typing import Any
 
 # gallery-dl ``status`` bitmask bits (see gallery_dl/job.py).
@@ -17,16 +18,21 @@ STATUS_SKIPPED = 8
 STATUS_NO_EXTRACTOR = 64
 STATUS_OS_ERROR = 128
 
+# The heartbeat runs on its own thread while gallery-dl emits from the main thread, so writes must
+# be serialized — a half-written line would be unparseable JSON on the manager's side.
+_WRITE_LOCK = threading.Lock()
+
 
 def emit(event: dict[str, Any]) -> None:
-    """Write one event as a JSON line to stdout and flush.
+    """Write one event as a JSON line to stdout and flush. Thread-safe.
 
     ``default=str`` is a safety net: gallery-dl metadata can contain non-JSON objects (e.g. a
     PathFormat), which would otherwise raise and kill the event. Coerce them to str.
     """
-    sys.stdout.write(json.dumps(event, default=str, separators=(",", ":")))
-    sys.stdout.write("\n")
-    sys.stdout.flush()
+    line = json.dumps(event, default=str, separators=(",", ":")) + "\n"
+    with _WRITE_LOCK:
+        sys.stdout.write(line)
+        sys.stdout.flush()
 
 
 def map_exit_status(status: int) -> tuple[str, str]:

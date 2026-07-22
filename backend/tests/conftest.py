@@ -48,35 +48,58 @@ def app(tmp_settings: Settings) -> FastAPI:
 
 
 class _FakeStdout:
-    """Async-iterable of bytes lines, mimicking ``proc.stdout``."""
+    """Async-iterable of bytes lines, mimicking ``proc.stdout``.
 
-    def __init__(self, lines: list[str], delay: float = 0.0) -> None:
+    ``delay`` applies uniformly; ``delays`` gives a per-line schedule (the last value repeats),
+    which is how "slow to produce the first file, then steady" extractions are modelled.
+    """
+
+    def __init__(
+        self, lines: list[str], delay: float = 0.0, delays: list[float] | None = None
+    ) -> None:
         self._lines = [ln.encode() for ln in lines]
         self._delay = delay
+        self._delays = list(delays) if delays else None
+        self._index = 0
+
+    def _next_delay(self) -> float:
+        if self._delays:
+            i = min(self._index, len(self._delays) - 1)
+            return self._delays[i]
+        return self._delay
 
     def __aiter__(self) -> _FakeStdout:
         return self
 
     async def __anext__(self) -> bytes:
-        if self._delay:
-            await asyncio.sleep(self._delay)
-        if self._lines:
-            return self._lines.pop(0)
-        raise StopAsyncIteration
+        line = await self.readline()
+        if not line:
+            raise StopAsyncIteration
+        return line
 
     async def readline(self) -> bytes:
         # The manager reads worker stdout via StreamReader.readline(); mimic it (b"" = EOF).
-        if self._delay:
-            await asyncio.sleep(self._delay)
+        delay = self._next_delay()
+        self._index += 1
+        if delay:
+            await asyncio.sleep(delay)
         if self._lines:
             return self._lines.pop(0)
         return b""
 
 
 class FakeProc:
-    def __init__(self, lines: list[str], returncode: int = 0, delay: float = 0.0) -> None:
-        self.stdout = _FakeStdout(lines, delay)
-        self.stderr = None
+    def __init__(
+        self,
+        lines: list[str],
+        returncode: int = 0,
+        delay: float = 0.0,
+        stderr_lines: list[str] | None = None,
+        delays: list[float] | None = None,
+    ) -> None:
+        self.stdout = _FakeStdout(lines, delay, delays)
+        # The manager drains stderr concurrently; give it a real stream so that path is exercised.
+        self.stderr = _FakeStdout(stderr_lines or [])
         self.returncode = returncode
         self.terminated = False
         self.killed = False
@@ -96,10 +119,14 @@ def fake_spawn() -> Callable[..., Callable[[str, dict[str, Any]], Awaitable[Fake
     """Factory: ``fake_spawn(lines, rc, delay)`` -> an async ``spawn_worker`` replacement."""
 
     def factory(
-        lines: list[str], returncode: int = 0, delay: float = 0.0
+        lines: list[str],
+        returncode: int = 0,
+        delay: float = 0.0,
+        stderr_lines: list[str] | None = None,
+        delays: list[float] | None = None,
     ) -> Callable[[str, dict[str, Any]], Awaitable[FakeProc]]:
         async def _spawn(python: str, payload: dict[str, Any]) -> FakeProc:  # noqa: ARG001
-            return FakeProc(lines, returncode, delay)
+            return FakeProc(lines, returncode, delay, stderr_lines, delays)
 
         return _spawn
 

@@ -5,6 +5,7 @@ export type JobEventType =
   | "prepare"
   | "file"
   | "progress"
+  | "heartbeat"
   | "stalled"
   | "retrying"
   | "error"
@@ -32,6 +33,11 @@ export interface JobEvent {
   attempt?: number;
   threshold?: number;
   since_last_file?: number | null;
+  /** "warmup" = timed out before the first file (still enumerating); "download" = mid-transfer. */
+  phase?: "warmup" | "download";
+  /** heartbeat only: beat counter and seconds since the worker started. */
+  beat?: number;
+  elapsed?: number;
   ts?: number;
 }
 

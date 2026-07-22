@@ -20,19 +20,20 @@ Both sides must honor it; the TS mirror lives in `frontend/src/lib/events.ts`.
 | `prepare`   | gallery-dl resolved a file, about to fetch    | `filename`, `url`                                       |
 | `file`      | A file was handled                            | `event` (`downloaded`\|`skipped`), `path`, `filename`, `bytes`? |
 | `progress`  | Running counts (manager-emitted, job-level/monotonic across retries), after each `file` | `downloaded`, `skipped`, `failed` |
-| `stalled`   | No file event within the adaptive deadline (non-terminal) | `attempt`, `threshold`, `since_last_file`?      |
+| `heartbeat` | Worker liveness while gallery-dl is silent (non-terminal) | `beat`, `elapsed`                    |
+| `stalled`   | No **file** event within the progress deadline (non-terminal) | `attempt`, `threshold`, `phase` (`warmup` \| `download`), `since_last_file`? |
 | `retrying`  | The stalled/exit worker was killed and a fresh one will spawn (non-terminal) | `attempt`, `reason` (`stalled` \| `worker-exited`) |
 | `error`     | A recoverable or fatal error                  | `message`, `kind`, `fatal` (bool)                       |
 | `completed` | **Terminal.** Worker exited status 0          | `exit_status`, `downloaded`, `skipped`, `reason`        |
-| `failed`    | **Terminal.** Worker exited non-zero (or stall retries exhausted → `reason: stalled`) | `exit_status`, `reason`, `message`? |
+| `failed`    | **Terminal.** Worker exited non-zero, or retries exhausted (`reason`: `stalled` \| `no-progress` \| `worker-crash` \| `missing-cookies` \| `downloads-dir-unwritable`) | `exit_status`, `reason`, `message`? |
 | `ping`      | sse-starlette keepalive (15 s)                | `{}`                                                    |
 | `end`       | Synthetic terminal sentinel from the SSE route | `{ "terminal": true }`                                |
 
 ## Rules
 
-1. **Exactly one terminal event** (`completed` or `failed`) is always emitted last. `stalled` and
-   `retrying` are **non-terminal** — the manager emits them around a kill+respawn, then the final
-   `completed`/`failed`.
+1. **Exactly one terminal event** (`completed` or `failed`) is always emitted last. `stalled`,
+   `retrying` and `heartbeat` are **non-terminal** — the manager emits them around a kill+respawn
+   (or continuously), then the final `completed`/`failed`.
 2. `progress` is **manager-emitted** (job-level, monotonic across retries), after each `file` event;
    the worker's own per-attempt `progress` events are dropped.
 3. All events carry `ts` (unix float) and `job_id` (except `ping`/`end`).
@@ -40,6 +41,19 @@ Both sides must honor it; the TS mirror lives in `frontend/src/lib/events.ts`.
 5. `fatal: true` on an `error` means the job will terminate; `fatal: false` is informational
    (e.g. a single 429 backoff that recovered).
 6. **Events never carry cookie values** — only filenames, paths, and counts.
+7. **Two independent deadlines** guard a job (see `jobs/manager.py`):
+   - *liveness* — no line at all, not even a `heartbeat`, within `STALL_LIVENESS_SECONDS` means the
+     worker process is wedged (e.g. blocked writing to a full stderr pipe).
+   - *progress* — no `file` event within the threshold. Before the first file that threshold is the
+     **warm-up** budget (`STALL_WARMUP_SECONDS`), because gallery-dl is silent for minutes while it
+     enumerates a profile — Instagram alone sleeps 6-12 s per paginated request. After the first
+     file it is `clamp(floor*backoff**attempt, multiplier*avg_inter_file, cap)`.
+   `heartbeat` deliberately resets only the liveness clock, never the progress clock.
+8. A warm-up timeout fails with `reason: no-progress` (not `stalled`) and gets its own, smaller
+   retry budget: with zero files fetched the archive has nothing to resume, so a retry just repeats
+   the same slow enumeration.
+9. `failed.message` carries the tail of the worker's stderr when there is one — that is where
+   gallery-dl's real error text (auth wall, permission denied, rate limit) appears.
 
 ## Example stream
 

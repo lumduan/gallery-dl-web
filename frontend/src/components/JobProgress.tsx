@@ -20,10 +20,14 @@ function describe(ev: JobEvent): string {
       return `progress: ${ev.downloaded ?? 0} downloaded, ${ev.skipped ?? 0} skipped, ${
         ev.failed ?? 0
       } failed`;
+    case "heartbeat":
+      return `· still working (${Math.round(ev.elapsed ?? 0)}s)`;
     case "stalled":
-      return `⏳ stalled — no progress for ${Math.round(ev.since_last_file ?? 0)}s (attempt ${
-        ev.attempt ?? 1
-      })`;
+      return ev.phase === "warmup"
+        ? `⏳ no files yet after ${Math.round(ev.threshold ?? 0)}s (attempt ${ev.attempt ?? 1})`
+        : `⏳ stalled — no progress for ${Math.round(ev.since_last_file ?? 0)}s (attempt ${
+            ev.attempt ?? 1
+          })`;
     case "retrying":
       return `↻ retrying (attempt ${ev.attempt ?? 1})`;
     case "error":
@@ -55,6 +59,10 @@ export function JobProgress({ jobId }: { jobId: string }) {
   const [status, setStatus] = useState("connecting");
   const [counts, setCounts] = useState({ downloaded: 0, skipped: 0, failed: 0 });
   const [stall, setStall] = useState<string | null>(null);
+  const [alive, setAlive] = useState<number | null>(null);
+  // The terminal event as it arrives on the stream — without this the failure alert below only
+  // renders after a reload, because `summary` is fetched once at mount.
+  const [terminalEvent, setTerminalEvent] = useState<JobEvent | null>(null);
   const esRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
@@ -80,8 +88,15 @@ export function JobProgress({ jobId }: { jobId: string }) {
           failed: ev.failed ?? 0,
         });
       }
+      if (ev.type === "heartbeat") {
+        setAlive(ev.elapsed ?? null);
+      }
       if (ev.type === "stalled") {
-        setStall("Stalled — no progress; retrying…");
+        setStall(
+          ev.phase === "warmup"
+            ? "Still no files — the profile may be large, restricted, or throttled. Retrying…"
+            : "Stalled — no progress; retrying…",
+        );
       } else if (ev.type === "retrying") {
         setStall(`Retrying (attempt ${ev.attempt ?? 1})…`);
       } else if (
@@ -92,7 +107,10 @@ export function JobProgress({ jobId }: { jobId: string }) {
       ) {
         setStall(null);
       }
-      if (ev.type === "completed" || ev.type === "failed") setStatus(ev.type);
+      if (ev.type === "completed" || ev.type === "failed") {
+        setStatus(ev.type);
+        setTerminalEvent(ev);
+      }
     };
     const onMsg = (e: MessageEvent) => {
       try {
@@ -107,6 +125,7 @@ export function JobProgress({ jobId }: { jobId: string }) {
       "prepare",
       "file",
       "progress",
+      "heartbeat",
       "stalled",
       "retrying",
       "error",
@@ -125,7 +144,9 @@ export function JobProgress({ jobId }: { jobId: string }) {
   }, [jobId]);
 
   const terminal = status === "completed" || status === "failed";
-  const finalReason = summary?.final_summary as
+  // Prefer the live terminal event; fall back to the summary fetched at mount (page reload case).
+  const finalReason = (terminalEvent ??
+    (summary?.final_summary as { reason?: string; message?: string } | undefined)) as
     | { reason?: string; message?: string }
     | undefined;
 
@@ -157,13 +178,19 @@ export function JobProgress({ jobId }: { jobId: string }) {
           {!terminal && stall && (
             <div className="alert alert-warning py-2 text-sm">{stall}</div>
           )}
+          {!terminal && !stall && alive !== null && counts.downloaded + counts.skipped === 0 && (
+            <div className="alert alert-info py-2 text-sm">
+              Looking through the profile… ({Math.round(alive)}s). Large or rate-limited profiles
+              can take several minutes before the first file appears.
+            </div>
+          )}
           {terminal && status === "completed" && (
             <a className="btn btn-primary btn-sm self-start" href={jobZipUrl(jobId)}>
               ⬇ Download all (.zip)
             </a>
           )}
           {terminal && status === "failed" && finalReason && (
-            <div className="alert alert-error py-2 text-sm">
+            <div className="alert alert-error flex-col items-start gap-1 py-2 text-sm">
               {finalReason.reason === "missing-cookies" ? (
                 <>
                   No cookies configured for this platform.{" "}
@@ -172,8 +199,26 @@ export function JobProgress({ jobId }: { jobId: string }) {
                   </a>
                   .
                 </>
+              ) : finalReason.reason === "downloads-dir-unwritable" ? (
+                <>
+                  <span className="font-semibold">Downloads folder is not writable.</span>
+                  <span className="whitespace-pre-wrap break-all font-mono text-xs">
+                    {String(finalReason.message ?? "")}
+                  </span>
+                </>
+              ) : finalReason.reason === "no-progress" ? (
+                <>
+                  <span className="font-semibold">
+                    No files were found before the timeout.
+                  </span>
+                  <span className="whitespace-pre-wrap break-all font-mono text-xs">
+                    {String(finalReason.message ?? "")}
+                  </span>
+                </>
               ) : (
-                String(finalReason.message ?? finalReason.reason ?? "Download failed")
+                <span className="whitespace-pre-wrap break-all">
+                  {String(finalReason.message ?? finalReason.reason ?? "Download failed")}
+                </span>
               )}
             </div>
           )}

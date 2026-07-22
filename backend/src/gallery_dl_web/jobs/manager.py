@@ -18,8 +18,10 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import sys
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +37,11 @@ logger = logging.getLogger(__name__)
 _GC_INTERVAL_SECONDS = 300
 _GC_MAX_AGE_SECONDS = 3600
 _TERMINAL_EVENTS = frozenset({"completed", "failed"})
+# How much worker stderr to keep for the failure message (gallery-dl can be very chatty).
+_STDERR_TAIL_LINES = 50
+_STDERR_TAIL_CHARS = 2000
+# Let the concurrent stderr drain catch up before quoting it in a failure message.
+_STDERR_SETTLE_SECONDS = 0.25
 
 
 def _new_job_id() -> str:
@@ -43,10 +50,18 @@ def _new_job_id() -> str:
 
 
 def _token() -> str:
-    # secrets would do, but os.urandom avoids an import and is plenty here.
-    import os
-
+    # secrets would do, but os.urandom is plenty here.
     return os.urandom(6).hex()
+
+
+def _tail_text(lines: deque[str]) -> str:
+    """Render captured worker stderr for a failure message, newest-biased and length-bounded."""
+    if not lines:
+        return ""
+    text = "\n".join(lines)
+    if len(text) > _STDERR_TAIL_CHARS:
+        text = "…" + text[-_STDERR_TAIL_CHARS:]
+    return f"worker output:\n{text}"
 
 
 class JobManager:
@@ -134,6 +149,21 @@ class JobManager:
                     )
                     return
 
+                problem = self._downloads_dir_problem(state.platform)
+                if problem is not None:
+                    await self._emit(
+                        state,
+                        {
+                            "type": "failed",
+                            "job_id": state.id,
+                            "exit_status": 0,
+                            "reason": "downloads-dir-unwritable",
+                            "message": problem,
+                            "ts": time.time(),
+                        },
+                    )
+                    return
+
                 await self._spawn_and_stream(state, options, cookies)
         except asyncio.CancelledError:
             logger.info("job %s cancelled", state.id)
@@ -170,6 +200,47 @@ class JobManager:
             if self._profiles is not None and state.is_terminal:
                 await self._reconcile_profile(state)
 
+    def _downloads_dir_problem(self, platform: str | None = None) -> str | None:
+        """Return a human-readable reason the downloads dir is unusable, or None if it's fine.
+
+        Checked BEFORE spawning: gallery-dl would otherwise fail on every single file, flooding
+        stderr and looking like a mysterious stall (that is exactly how this was first hit — a
+        DOWNLOADS_DIR pointing at a host path that was never bind-mounted into the container).
+
+        The per-platform subdirectory is checked too. A writable root with an unwritable child is
+        the nastier variant: reads succeed, so already-archived files report ``skipped`` and the
+        job looks healthy right up until every actual download fails. That happens whenever the
+        tree was created by another user — e.g. copied in as root onto an NFS share with
+        ``root_squash``, which lands it as ``nobody:nogroup`` mode 0755.
+        """
+        downloads = self._settings.downloads_dir
+        try:
+            downloads.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            return (
+                f"Downloads directory {downloads} cannot be created ({exc.strerror}). "
+                "If this is a host path, check that it is bind-mounted into the container "
+                "and writable by the app user."
+            )
+        if not os.access(downloads, os.W_OK):
+            return (
+                f"Downloads directory {downloads} is not writable by the app user. "
+                "Check the bind mount and its permissions."
+            )
+        if platform:
+            target = downloads / platform
+            # Only meaningful if it already exists; gallery-dl creates it otherwise.
+            if target.is_dir() and not os.access(target, os.W_OK):
+                st = target.stat()
+                return (
+                    f"{target} exists but is not writable by the app user "
+                    f"(uid {os.geteuid()}); it is owned by uid {st.st_uid} with mode "
+                    f"{oct(st.st_mode)[-4:]}. Existing files can still be read, so downloads "
+                    "would fail one-by-one while already-archived files report as skipped. "
+                    "Fix the ownership/permissions of that directory."
+                )
+        return None
+
     async def _reconcile_profile(self, state: JobState) -> None:
         """After a job, rebuild the affected profile's metadata.json. Never fails the job."""
         paths = state.downloaded_paths()
@@ -193,30 +264,45 @@ class JobManager:
         options: dict[str, Any],
         cookies: dict[str, Any] | str,
     ) -> None:
-        """Spawn the worker, stream events with an adaptive stall deadline, retry on stall/crash."""
+        """Spawn the worker, stream events with stall deadlines, retry on stall/crash.
+
+        Retry budget depends on how far the job got: a job that has never produced a file timed out
+        in *warm-up* (gallery-dl still enumerating), and repeating that just repeats the same slow
+        walk from zero — the per-profile archive can only resume what was actually downloaded. So
+        warm-up gets ``stall_warmup_max_retries``; once files are flowing, ``stall_max_retries``.
+        """
         payload = self._build_payload(state, options, cookies)
         python = self._settings.worker_python or sys.executable
-        max_retries = max(0, self._settings.stall_max_retries)
 
-        for attempt in range(max_retries + 1):
+        attempt = 0
+        while True:
             logger.info(
                 "spawning worker for job %s (%s, attempt %d)", state.id, state.platform, attempt + 1
             )
             proc = await spawn_worker(python, payload)
-            outcome = await self._stream_with_stall(state, proc, attempt)
+            stderr_tail: deque[str] = deque(maxlen=_STDERR_TAIL_LINES)
+            drain = asyncio.create_task(self._drain_stderr(state, proc, stderr_tail))
+            outcome = await self._stream_with_stall(state, proc, attempt, stderr_tail)
 
             if outcome == "terminal":
+                await self._stop_drain(drain)
                 await self._reap(proc)
                 return
 
             stalled = outcome == "stalled"
+            warmup = state.file_count == 0
             if stalled:
                 await self._kill_worker(proc)
             else:  # eof: worker exited without a terminal event
                 await self._reap(proc)
+            await self._stop_drain(drain)
 
+            max_retries = (
+                max(0, self._settings.stall_warmup_max_retries)
+                if warmup
+                else max(0, self._settings.stall_max_retries)
+            )
             if attempt < max_retries:
-                threshold = self._stall_threshold(state, attempt)
                 if stalled:
                     since = time.time() - state.last_file_ts if state.last_file_ts else None
                     await self._emit(
@@ -225,8 +311,9 @@ class JobManager:
                             "type": "stalled",
                             "job_id": state.id,
                             "attempt": attempt + 1,
-                            "threshold": threshold,
+                            "threshold": self._stall_threshold(state, attempt),
                             "since_last_file": since,
+                            "phase": "warmup" if warmup else "download",
                             "ts": time.time(),
                         },
                     )
@@ -240,21 +327,21 @@ class JobManager:
                         "ts": time.time(),
                     },
                 )
+                attempt += 1
                 continue
 
-            # Retries exhausted -> terminal failure.
+            # Retries exhausted -> terminal failure. Surface the worker's stderr tail: it usually
+            # carries gallery-dl's real error (auth wall, permission denied, rate limit).
+            reason, message = self._failure_reason(stalled, warmup)
+            tail = _tail_text(stderr_tail)
             await self._emit(
                 state,
                 {
                     "type": "failed",
                     "job_id": state.id,
                     "exit_status": 0,
-                    "reason": "stalled" if stalled else "worker-crash",
-                    "message": (
-                        "download stalled (no progress within threshold); retries exhausted"
-                        if stalled
-                        else "worker exited without a terminal event"
-                    ),
+                    "reason": reason,
+                    "message": f"{message}\n{tail}" if tail else message,
                     "downloaded": state.downloaded,
                     "skipped": state.skipped,
                     "ts": time.time(),
@@ -262,20 +349,104 @@ class JobManager:
             )
             return
 
+    @staticmethod
+    def _failure_reason(stalled: bool, warmup: bool) -> tuple[str, str]:
+        if not stalled:
+            return "worker-crash", "worker exited without a terminal event"
+        if warmup:
+            return (
+                "no-progress",
+                "gallery-dl never produced a file before the warm-up deadline. The profile may be "
+                "private or restricted, the session cookies may be stale, or the platform may be "
+                "throttling. See the details below.",
+            )
+        return "stalled", "download stalled (no progress within threshold); retries exhausted"
+
+    async def _drain_stderr(
+        self,
+        state: JobState,
+        proc: asyncio.subprocess.Process,
+        tail: deque[str],
+    ) -> None:
+        """Continuously read the worker's stderr into ``tail``.
+
+        This MUST run for the lifetime of the process: stderr is a pipe, and once ~64 KB of
+        undrained output accumulates the worker BLOCKS on write. Its stdout then goes silent and
+        the stall detector misreports a wedged process as a stalled download.
+        """
+        stream = proc.stderr
+        if stream is None:
+            return
+        while True:
+            try:
+                raw = await stream.readline()
+            except (asyncio.CancelledError, GeneratorExit):
+                raise
+            except Exception:  # noqa: BLE001 — draining must never break the job
+                logger.debug("job %s: stderr drain ended early", state.id, exc_info=True)
+                return
+            if not raw:
+                return
+            line = raw.decode("utf-8", errors="replace").rstrip()
+            if line:
+                tail.append(line)
+                logger.debug("job %s worker stderr: %s", state.id, line)
+
+    @staticmethod
+    async def _stop_drain(task: asyncio.Task[None]) -> None:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
+
     async def _stream_with_stall(
-        self, state: JobState, proc: asyncio.subprocess.Process, attempt: int
+        self,
+        state: JobState,
+        proc: asyncio.subprocess.Process,
+        attempt: int,
+        stderr_tail: deque[str] | None = None,
     ) -> str:
-        """Read worker stdout with a stall deadline. Returns 'terminal' | 'stalled' | 'eof'."""
+        """Read worker stdout under two deadlines. Returns 'terminal' | 'stalled' | 'eof'.
+
+        * **liveness** — no line at all (not even a heartbeat) within ``stall_liveness_seconds``
+          means the process is wedged, not slow.
+        * **progress** — no ``file`` event within ``_stall_threshold``. Heartbeats deliberately do
+          NOT reset this clock; only real download progress does.
+
+        Splitting the two is the whole point: gallery-dl is legitimately silent for minutes while
+        it enumerates a profile, so a single "any output" deadline killed healthy jobs.
+        """
         stdout = proc.stdout
         assert stdout is not None
+        started = time.time()
+        liveness = max(1.0, self._settings.stall_liveness_seconds)
+        last_line_ts = started
+        heartbeat_seen = False
         while True:
-            threshold = self._stall_threshold(state, attempt)
-            try:
-                raw = await asyncio.wait_for(stdout.readline(), timeout=threshold)
-            except TimeoutError:
+            now = time.time()
+            progress_deadline = self._stall_threshold(state, attempt)
+            since_progress = now - (state.last_activity_ts or started)
+            if since_progress >= progress_deadline:
                 return "stalled"
+            # Wake at whichever deadline comes first so neither can overshoot.
+            until_liveness = liveness - (now - last_line_ts)
+            until_progress = progress_deadline - since_progress
+            wait = max(0.05, min(until_liveness, until_progress))
+            try:
+                raw = await asyncio.wait_for(stdout.readline(), timeout=wait)
+            except TimeoutError:
+                # Only treat silence as a wedge once we know this worker DOES send heartbeats —
+                # otherwise the progress deadline above is the sole authority.
+                if heartbeat_seen and time.time() - last_line_ts >= liveness:
+                    logger.warning(
+                        "job %s: no worker output for %.0fs despite heartbeats; assuming wedged",
+                        state.id,
+                        liveness,
+                    )
+                    return "stalled"
+                continue
             if not raw:  # EOF
                 return "eof"
+            last_line_ts = time.time()
             line = raw.decode("utf-8", errors="replace").strip()
             if not line:
                 continue
@@ -289,6 +460,16 @@ class JobManager:
             etype = event.get("type")
             if etype == "progress":
                 continue  # the manager owns job-level progress (monotonic across retries)
+            if etype == "heartbeat":
+                heartbeat_seen = True
+                await self._emit(state, event)  # liveness only — does NOT reset the progress clock
+                continue
+            if etype == "prepare":
+                # Real work: gallery-dl resolved a file. Counts as progress even if no `file`
+                # event follows (filtered items, or a phase that yields nothing downloadable).
+                state.last_activity_ts = time.time()
+                await self._emit(state, event)
+                continue
             if etype == "file":
                 self._record_file(state, event)
                 await self._emit(state, event)
@@ -297,6 +478,16 @@ class JobManager:
             if etype in ("completed", "failed"):
                 event["downloaded"] = state.downloaded
                 event["skipped"] = state.skipped
+                if etype == "failed" and stderr_tail is not None:
+                    # gallery-dl reports *what* failed via its exit-status bitmask but the *why*
+                    # (auth wall, 404, rate limit) only ever reaches stderr. Attach it or the UI
+                    # shows a bare "dl-failed". Yield briefly first: the drain task runs
+                    # concurrently and may still have buffered lines to consume.
+                    await asyncio.sleep(_STDERR_SETTLE_SECONDS)
+                    tail = _tail_text(stderr_tail)
+                    if tail:
+                        existing = str(event.get("message") or "").strip()
+                        event["message"] = f"{existing}\n{tail}" if existing else tail
                 await self._emit(state, event)
                 return "terminal"
             await self._emit(state, event)
@@ -306,6 +497,7 @@ class JobManager:
         if state.first_file_ts is None:
             state.first_file_ts = ts
         state.last_file_ts = ts
+        state.last_activity_ts = ts
         state.file_count += 1
         if event.get("event") == "skipped":
             state.skipped += 1
@@ -323,8 +515,19 @@ class JobManager:
         }
 
     def _stall_threshold(self, state: JobState, attempt: int) -> float:
-        """Adaptive deadline: clamp(floor*backoff**attempt, multiplier*avg_inter_file, cap)."""
+        """Deadline for the next ``file`` event.
+
+        Until gallery-dl shows ANY activity (a ``prepare`` or a ``file``) this is the WARM-UP
+        budget: it is walking the profile and emits nothing, which for Instagram alone means 6-12s
+        of sleep per paginated request. Using the steady-state floor here killed healthy jobs
+        before they ever downloaded anything.
+
+        Once activity starts, the adaptive rule applies:
+        ``clamp(floor*backoff**attempt, multiplier*avg_inter_file, cap)``.
+        """
         s = self._settings
+        if state.last_activity_ts is None:
+            return min(s.stall_warmup_seconds * (s.stall_backoff**attempt), s.stall_cap_seconds)
         floor = s.stall_floor_seconds * (s.stall_backoff**attempt)
         avg = 0.0
         if (
@@ -384,6 +587,7 @@ class JobManager:
             "cookies": cookies,
             "options": merged,
             "http_timeout_seconds": self._settings.http_timeout_seconds,
+            "heartbeat_seconds": self._settings.heartbeat_seconds,
             "preview": False,
         }
 

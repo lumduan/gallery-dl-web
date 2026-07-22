@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 import types
 from typing import IO, Any
@@ -140,6 +141,27 @@ _POSTPROCESSORS = [
 ]
 
 
+def _start_heartbeat(interval: float) -> threading.Event:
+    """Emit a ``heartbeat`` event every ``interval`` seconds until the returned Event is set.
+
+    gallery-dl is completely silent while it enumerates a profile — that can legitimately take
+    minutes (Instagram sleeps 6-12s between requests). Without this the manager cannot tell
+    "working, just slow" from "wedged", and the UI looks frozen. Daemon thread so a crash in the
+    main thread can never leave the process hanging on it.
+    """
+    stop = threading.Event()
+
+    def _beat() -> None:
+        beats = 0
+        while not stop.wait(interval):
+            beats += 1
+            with contextlib.suppress(Exception):  # a broken stdout must not kill the job
+                _emit({"type": "heartbeat", "beat": beats, "elapsed": beats * interval})
+
+    threading.Thread(target=_beat, name="worker-heartbeat", daemon=True).start()
+    return stop
+
+
 def run(payload: dict[str, Any]) -> int:
     """Run one job. Returns the worker process exit code (0 = ran gallery-dl, 2 = crash)."""
     job_id = str(payload.get("job_id", "unknown"))
@@ -158,9 +180,14 @@ def run(payload: dict[str, Any]) -> int:
     # Register our progress callbacks as a postprocessor (applies to parent + child jobs).
     config.set(("extractor",), "postprocessors", _POSTPROCESSORS)
 
+    heartbeat: threading.Event | None = None
     try:
         config_builder.apply(payload, config)
         _emit({"type": "started", "url": url})
+
+        interval = float(payload.get("heartbeat_seconds", 15.0))
+        if interval > 0:
+            heartbeat = _start_heartbeat(interval)
 
         j = job.DataJob(url) if preview else job.DownloadJob(url)
         status = j.run()
@@ -188,6 +215,11 @@ def run(payload: dict[str, Any]) -> int:
             }
         )
         return 2
+    finally:
+        # A late beat may still slip out after the terminal event; harmless — the manager stops
+        # reading at the terminal event and reaps the process.
+        if heartbeat is not None:
+            heartbeat.set()
 
 
 def main(stdin: IO[str] | None = None) -> int:
