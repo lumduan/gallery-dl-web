@@ -1,10 +1,12 @@
-// Mirror of the backend SSE event contract (see backend/docs/event-contract.md).
+// Mirror of the backend SSE event contract (see docs/event-contract.md).
 export type JobEventType =
   | "queued"
   | "started"
   | "prepare"
   | "file"
   | "progress"
+  | "stalled"
+  | "retrying"
   | "error"
   | "completed"
   | "failed"
@@ -27,6 +29,9 @@ export interface JobEvent {
   fatal?: boolean;
   reason?: string;
   exit_status?: number;
+  attempt?: number;
+  threshold?: number;
+  since_last_file?: number | null;
   ts?: number;
 }
 

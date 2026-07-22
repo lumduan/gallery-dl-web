@@ -36,6 +36,12 @@ class JobState:
     # Per-profile archive path used for this job (so delete can remove it even though gallery-dl's
     # {username} folder name != the URL-derived archive key). Set in _build_payload.
     archive_path: str | None = None
+    # Job-level (cross-retry) file tracking for the adaptive stall detector + monotonic progress.
+    downloaded: int = 0
+    skipped: int = 0
+    first_file_ts: float | None = None
+    last_file_ts: float | None = None
+    file_count: int = 0
 
     @property
     def is_terminal(self) -> bool:

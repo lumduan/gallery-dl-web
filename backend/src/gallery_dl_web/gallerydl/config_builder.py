@@ -78,6 +78,8 @@ def apply(payload: dict[str, Any], config: ConfigLike) -> list[tuple[ConfigPath,
     _set(_EXTRACTOR_PATH, "base-directory", output_dir)
     # gallery-dl writes refreshed cookies back to the source by default; never want that here.
     _set(_EXTRACTOR_PATH, "cookies-update", False)
+    # Per-request HTTP timeout so a hung request fails fast instead of parking in D state.
+    _set(_EXTRACTOR_PATH, "timeout", float(payload.get("http_timeout_seconds", 30)))
 
     platform_path = _IG_PATH if platform == "instagram" else _FB_PATH
     cookie_arg = _cookie_for(platform, cookies)

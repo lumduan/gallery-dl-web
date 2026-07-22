@@ -20,6 +20,12 @@ function describe(ev: JobEvent): string {
       return `progress: ${ev.downloaded ?? 0} downloaded, ${ev.skipped ?? 0} skipped, ${
         ev.failed ?? 0
       } failed`;
+    case "stalled":
+      return `⏳ stalled — no progress for ${Math.round(ev.since_last_file ?? 0)}s (attempt ${
+        ev.attempt ?? 1
+      })`;
+    case "retrying":
+      return `↻ retrying (attempt ${ev.attempt ?? 1})`;
     case "error":
       return `${ev.fatal ? "⛔ " : "⚠ "}${ev.message ?? ev.kind ?? "error"}`;
     case "completed":
@@ -48,6 +54,7 @@ export function JobProgress({ jobId }: { jobId: string }) {
   const [summary, setSummary] = useState<JobSummary | null>(null);
   const [status, setStatus] = useState("connecting");
   const [counts, setCounts] = useState({ downloaded: 0, skipped: 0, failed: 0 });
+  const [stall, setStall] = useState<string | null>(null);
   const esRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
@@ -73,6 +80,18 @@ export function JobProgress({ jobId }: { jobId: string }) {
           failed: ev.failed ?? 0,
         });
       }
+      if (ev.type === "stalled") {
+        setStall("Stalled — no progress; retrying…");
+      } else if (ev.type === "retrying") {
+        setStall(`Retrying (attempt ${ev.attempt ?? 1})…`);
+      } else if (
+        ev.type === "file" ||
+        ev.type === "progress" ||
+        ev.type === "completed" ||
+        ev.type === "failed"
+      ) {
+        setStall(null);
+      }
       if (ev.type === "completed" || ev.type === "failed") setStatus(ev.type);
     };
     const onMsg = (e: MessageEvent) => {
@@ -82,9 +101,18 @@ export function JobProgress({ jobId }: { jobId: string }) {
         /* ignore malformed */
       }
     };
-    ["queued", "started", "prepare", "file", "progress", "error", "completed", "failed"].forEach(
-      (t) => es.addEventListener(t, onMsg),
-    );
+    [
+      "queued",
+      "started",
+      "prepare",
+      "file",
+      "progress",
+      "stalled",
+      "retrying",
+      "error",
+      "completed",
+      "failed",
+    ].forEach((t) => es.addEventListener(t, onMsg));
     es.addEventListener("end", () => es.close());
     es.onerror = () => {
       /* EventSource auto-reconnects; backend replays history on connect */
@@ -126,6 +154,9 @@ export function JobProgress({ jobId }: { jobId: string }) {
               <div className="stat-value text-error">{counts.failed}</div>
             </div>
           </div>
+          {!terminal && stall && (
+            <div className="alert alert-warning py-2 text-sm">{stall}</div>
+          )}
           {terminal && status === "completed" && (
             <a className="btn btn-primary btn-sm self-start" href={jobZipUrl(jobId)}>
               ⬇ Download all (.zip)

@@ -19,18 +19,22 @@ Both sides must honor it; the TS mirror lives in `frontend/src/lib/events.ts`.
 | `started`   | Worker process spawned, gallery-dl running    | `job_id`, `url`                                         |
 | `prepare`   | gallery-dl resolved a file, about to fetch    | `filename`, `url`                                       |
 | `file`      | A file was handled                            | `event` (`downloaded`\|`skipped`), `path`, `filename`, `bytes`? |
-| `progress`  | Running counts, emitted after each `file`     | `downloaded`, `skipped`, `failed`                       |
+| `progress`  | Running counts (manager-emitted, job-level/monotonic across retries), after each `file` | `downloaded`, `skipped`, `failed` |
+| `stalled`   | No file event within the adaptive deadline (non-terminal) | `attempt`, `threshold`, `since_last_file`?      |
+| `retrying`  | The stalled/exit worker was killed and a fresh one will spawn (non-terminal) | `attempt`, `reason` (`stalled` \| `worker-exited`) |
 | `error`     | A recoverable or fatal error                  | `message`, `kind`, `fatal` (bool)                       |
 | `completed` | **Terminal.** Worker exited status 0          | `exit_status`, `downloaded`, `skipped`, `reason`        |
-| `failed`    | **Terminal.** Worker exited non-zero          | `exit_status`, `reason`, `message`?                     |
+| `failed`    | **Terminal.** Worker exited non-zero (or stall retries exhausted → `reason: stalled`) | `exit_status`, `reason`, `message`? |
 | `ping`      | sse-starlette keepalive (15 s)                | `{}`                                                    |
 | `end`       | Synthetic terminal sentinel from the SSE route | `{ "terminal": true }`                                |
 
 ## Rules
 
-1. **Exactly one terminal event** (`completed` or `failed`) is always emitted last — the worker
-   wraps `main()` in `try/except BaseException` so this holds even on crash.
-2. `progress` is emitted after every `file` event.
+1. **Exactly one terminal event** (`completed` or `failed`) is always emitted last. `stalled` and
+   `retrying` are **non-terminal** — the manager emits them around a kill+respawn, then the final
+   `completed`/`failed`.
+2. `progress` is **manager-emitted** (job-level, monotonic across retries), after each `file` event;
+   the worker's own per-attempt `progress` events are dropped.
 3. All events carry `ts` (unix float) and `job_id` (except `ping`/`end`).
 4. `bytes` is `null` when gallery-dl doesn't expose the size; otherwise the on-disk file size.
 5. `fatal: true` on an `error` means the job will terminate; `fatal: false` is informational

@@ -44,6 +44,16 @@ class Settings(BaseSettings):
     zip_ttl_seconds: int = 300  # how long a generated profile .zip lives after last access
     thumbnail_size: int = 300  # longest-side px for generated thumbnails
 
+    # Stall detection + retry (a download with no file events for longer than "normal" is killed
+    # and retried). Threshold = clamp(floor*backoff**attempt, multiplier*avg_inter_file, cap).
+    http_timeout_seconds: float = 30.0  # gallery-dl extractor.timeout (per-request deadline)
+    stall_floor_seconds: float = 90.0  # warmup / minimum threshold before any file arrives
+    stall_multiplier: float = 4.0  # threshold scales with the running avg inter-file time
+    stall_cap_seconds: float = 600.0  # max threshold
+    stall_max_retries: int = 2  # retry a stalled download this many times before failing
+    stall_backoff: float = 1.5  # threshold multiplied by this each retry attempt
+    stall_kill_grace_seconds: float = 10.0  # SIGTERM -> SIGKILL grace when killing a stalled worker
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _split_cors_origins(cls, value: object) -> object:

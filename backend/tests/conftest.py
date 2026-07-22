@@ -64,12 +64,28 @@ class _FakeStdout:
             return self._lines.pop(0)
         raise StopAsyncIteration
 
+    async def readline(self) -> bytes:
+        # The manager reads worker stdout via StreamReader.readline(); mimic it (b"" = EOF).
+        if self._delay:
+            await asyncio.sleep(self._delay)
+        if self._lines:
+            return self._lines.pop(0)
+        return b""
+
 
 class FakeProc:
     def __init__(self, lines: list[str], returncode: int = 0, delay: float = 0.0) -> None:
         self.stdout = _FakeStdout(lines, delay)
         self.stderr = None
         self.returncode = returncode
+        self.terminated = False
+        self.killed = False
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+    def kill(self) -> None:
+        self.killed = True
 
     async def wait(self) -> int:
         return self.returncode

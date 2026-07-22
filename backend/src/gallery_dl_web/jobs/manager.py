@@ -193,13 +193,89 @@ class JobManager:
         options: dict[str, Any],
         cookies: dict[str, Any] | str,
     ) -> None:
+        """Spawn the worker, stream events with an adaptive stall deadline, retry on stall/crash."""
         payload = self._build_payload(state, options, cookies)
         python = self._settings.worker_python or sys.executable
-        logger.info("spawning worker for job %s (%s)", state.id, state.platform)
-        proc = await spawn_worker(python, payload)
+        max_retries = max(0, self._settings.stall_max_retries)
+
+        for attempt in range(max_retries + 1):
+            logger.info(
+                "spawning worker for job %s (%s, attempt %d)", state.id, state.platform, attempt + 1
+            )
+            proc = await spawn_worker(python, payload)
+            outcome = await self._stream_with_stall(state, proc, attempt)
+
+            if outcome == "terminal":
+                await self._reap(proc)
+                return
+
+            stalled = outcome == "stalled"
+            if stalled:
+                await self._kill_worker(proc)
+            else:  # eof: worker exited without a terminal event
+                await self._reap(proc)
+
+            if attempt < max_retries:
+                threshold = self._stall_threshold(state, attempt)
+                if stalled:
+                    since = time.time() - state.last_file_ts if state.last_file_ts else None
+                    await self._emit(
+                        state,
+                        {
+                            "type": "stalled",
+                            "job_id": state.id,
+                            "attempt": attempt + 1,
+                            "threshold": threshold,
+                            "since_last_file": since,
+                            "ts": time.time(),
+                        },
+                    )
+                await self._emit(
+                    state,
+                    {
+                        "type": "retrying",
+                        "job_id": state.id,
+                        "attempt": attempt + 2,
+                        "reason": "stalled" if stalled else "worker-exited",
+                        "ts": time.time(),
+                    },
+                )
+                continue
+
+            # Retries exhausted -> terminal failure.
+            await self._emit(
+                state,
+                {
+                    "type": "failed",
+                    "job_id": state.id,
+                    "exit_status": 0,
+                    "reason": "stalled" if stalled else "worker-crash",
+                    "message": (
+                        "download stalled (no progress within threshold); retries exhausted"
+                        if stalled
+                        else "worker exited without a terminal event"
+                    ),
+                    "downloaded": state.downloaded,
+                    "skipped": state.skipped,
+                    "ts": time.time(),
+                },
+            )
+            return
+
+    async def _stream_with_stall(
+        self, state: JobState, proc: asyncio.subprocess.Process, attempt: int
+    ) -> str:
+        """Read worker stdout with a stall deadline. Returns 'terminal' | 'stalled' | 'eof'."""
         stdout = proc.stdout
         assert stdout is not None
-        async for raw in stdout:
+        while True:
+            threshold = self._stall_threshold(state, attempt)
+            try:
+                raw = await asyncio.wait_for(stdout.readline(), timeout=threshold)
+            except TimeoutError:
+                return "stalled"
+            if not raw:  # EOF
+                return "eof"
             line = raw.decode("utf-8", errors="replace").strip()
             if not line:
                 continue
@@ -210,28 +286,73 @@ class JobManager:
                 continue
             if not isinstance(event, dict) or "type" not in event:
                 continue
+            etype = event.get("type")
+            if etype == "progress":
+                continue  # the manager owns job-level progress (monotonic across retries)
+            if etype == "file":
+                self._record_file(state, event)
+                await self._emit(state, event)
+                await self._emit(state, self._job_progress(state))
+                continue
+            if etype in ("completed", "failed"):
+                event["downloaded"] = state.downloaded
+                event["skipped"] = state.skipped
+                await self._emit(state, event)
+                return "terminal"
             await self._emit(state, event)
-        await proc.wait()
 
-        if not state.is_terminal:
-            # Worker exited without a terminal event (e.g. SIGKILL) — synthesize one.
-            stderr = ""
-            if proc.stderr is not None:
-                try:
-                    stderr = (await proc.stderr.read()).decode("utf-8", errors="replace")
-                except Exception:  # noqa: BLE001
-                    stderr = ""
-            await self._emit(
-                state,
-                {
-                    "type": "failed",
-                    "job_id": state.id,
-                    "exit_status": proc.returncode or 0,
-                    "reason": "worker-crash",
-                    "message": (stderr.strip()[:500] or "worker exited without a terminal event"),
-                    "ts": time.time(),
-                },
-            )
+    def _record_file(self, state: JobState, event: dict[str, Any]) -> None:
+        ts = float(event.get("ts") or time.time())
+        if state.first_file_ts is None:
+            state.first_file_ts = ts
+        state.last_file_ts = ts
+        state.file_count += 1
+        if event.get("event") == "skipped":
+            state.skipped += 1
+        else:
+            state.downloaded += 1
+
+    def _job_progress(self, state: JobState) -> dict[str, Any]:
+        return {
+            "type": "progress",
+            "job_id": state.id,
+            "downloaded": state.downloaded,
+            "skipped": state.skipped,
+            "failed": 0,
+            "ts": time.time(),
+        }
+
+    def _stall_threshold(self, state: JobState, attempt: int) -> float:
+        """Adaptive deadline: clamp(floor*backoff**attempt, multiplier*avg_inter_file, cap)."""
+        s = self._settings
+        floor = s.stall_floor_seconds * (s.stall_backoff**attempt)
+        avg = 0.0
+        if (
+            state.file_count > 1
+            and state.first_file_ts is not None
+            and state.last_file_ts is not None
+        ):
+            avg = (state.last_file_ts - state.first_file_ts) / (state.file_count - 1)
+        threshold = max(floor, s.stall_multiplier * avg) if avg > 0 else floor
+        return min(threshold, s.stall_cap_seconds)
+
+    async def _kill_worker(self, proc: asyncio.subprocess.Process) -> None:
+        """SIGTERM, escalate to SIGKILL after the grace period."""
+        try:
+            proc.terminate()
+        except ProcessLookupError:
+            return
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=self._settings.stall_kill_grace_seconds)
+        except TimeoutError:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            with contextlib.suppress(Exception):  # noqa: BLE001
+                await proc.wait()
+
+    async def _reap(self, proc: asyncio.subprocess.Process) -> None:
+        with contextlib.suppress(Exception):  # noqa: BLE001
+            await proc.wait()
 
     def _build_payload(
         self,
@@ -262,6 +383,7 @@ class JobManager:
             "output_dir": str(self._settings.downloads_dir),
             "cookies": cookies,
             "options": merged,
+            "http_timeout_seconds": self._settings.http_timeout_seconds,
             "preview": False,
         }
 

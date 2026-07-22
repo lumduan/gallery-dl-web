@@ -32,6 +32,12 @@ async function proxy(req: NextRequest, ctx: Ctx): Promise<Response> {
   const respHeaders = new Headers();
   const upstreamCt = upstream.headers.get("content-type");
   if (upstreamCt) respHeaders.set("content-type", upstreamCt);
+  // Forward download metadata so files keep their real names (e.g. profile .zip -> "<name>.zip",
+  // not the URL's last segment "zip"). Without this the browser falls back to "zip.zip".
+  const cd = upstream.headers.get("content-disposition");
+  if (cd) respHeaders.set("content-disposition", cd);
+  const cl = upstream.headers.get("content-length");
+  if (cl) respHeaders.set("content-length", cl);
   respHeaders.set("cache-control", "no-cache");
   respHeaders.set("x-accel-buffering", "no");
 
