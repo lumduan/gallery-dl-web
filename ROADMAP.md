@@ -85,7 +85,7 @@ independently.
       original 90 s single deadline was found killing healthy jobs mid-enumeration
 - [x] live download E2E with **real** cookies — 1423 files / 0.84 GB across 3 profiles
 - [x] tag `v0.1.0` (2026-07-23) → first ghcr publish of
-      `ghcr.io/lumduan/gallery-dl-web-{backend,frontend}:{latest,v0.1.0}`
+      `ghcr.io/lumduan/gallery-dl-web/{backend,frontend}:{latest,v0.1.0}`
 
 ### 5 · Queue control — ✅ DONE
 Prompted by a live incident: two large profiles held both concurrency slots for hours, two more sat
@@ -102,7 +102,20 @@ at `queued` with no explanation, and a browser refresh lost the only link to a r
       be leaked
 - [x] 19 new backend tests (150 total, 90% coverage); frontend lint + typecheck + build green
 - [x] tag `v0.2.0` (2026-07-23) → ghcr publish of
-      `ghcr.io/lumduan/gallery-dl-web-{backend,frontend}:{latest,v0.2.0}`
+      `ghcr.io/lumduan/gallery-dl-web/{backend,frontend}:{latest,v0.2.0}`
+- [x] published images renamed from `gallery-dl-web-{backend,frontend}` to the nested
+      `gallery-dl-web/{backend,frontend}`. A privacy fix required deleting and recreating the
+      GitHub repo (see below), which orphaned the original ghcr packages: they kept an internal
+      link to the deleted repository, so the workflow's `GITHUB_TOKEN` could no longer push to them
+      (`permission_denied: write_package`) and the recreated repo could not be re-attached. Fresh
+      package names have no such link and are created correctly by the workflow itself.
+
+> **Note on the repository history.** `test_errors.py` was originally committed with a real
+> Facebook username and that person's photo/album ids pasted in as "verbatim" stderr. All of it was
+> purged with `git-filter-repo`, and because GitHub keeps unreachable objects addressable by SHA
+> after a force-push, the repository was deleted and recreated to guarantee removal. The published
+> container images never contained the data — `backend/Dockerfile` copies only `src/`. See the
+> sanitizing rule in `CLAUDE.md` under testing conventions.
 
 ### D1 · Operator cookies — ✅ DONE
 - **Primary (new): browser extension** — load `extension/` unpacked, set the server URL, click

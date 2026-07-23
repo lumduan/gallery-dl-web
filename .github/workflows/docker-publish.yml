@@ -24,7 +24,7 @@ jobs:
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/lumduan/gallery-dl-web-backend
+          images: ghcr.io/lumduan/gallery-dl-web/backend
           tags: |
             type=raw,value=latest
             type=ref,event=tag
@@ -51,7 +51,7 @@ jobs:
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/lumduan/gallery-dl-web-frontend
+          images: ghcr.io/lumduan/gallery-dl-web/frontend
           tags: |
             type=raw,value=latest
             type=ref,event=tag

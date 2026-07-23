@@ -9,7 +9,7 @@ Two-service web app wrapping `gallery-dl` to download Instagram & Facebook image
   src-layout, hatchling, ruff (E/F/I/UP/B/SIM, line 100), mypy strict on `src`, pytest ≥80% coverage.
 - **Frontend** (`frontend/`, Node 24): Next.js 16 + React 19 + Tailwind v4 + DaisyUI 5.
 - **Containers**: multi-stage Dockerfiles, non-root UID 1001; `docker-compose.yml` (prod) +
-  `docker-compose.dev.yml` (dev, **standalone**). Images → `ghcr.io/lumduan/gallery-dl-web-{backend,frontend}`.
+  `docker-compose.dev.yml` (dev, **standalone**). Images → `ghcr.io/lumduan/gallery-dl-web/{backend,frontend}`.
 
 ## Architecture in one paragraph
 `POST /api/jobs` → `JobManager` spawns a subprocess `python -m gallery_dl_web.gallerydl.worker`, sends

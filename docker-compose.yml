@@ -5,7 +5,7 @@ name: gallery-dl-web
 services:
   backend:
     build: ./backend
-    image: ghcr.io/lumduan/gallery-dl-web-backend:latest
+    image: ghcr.io/lumduan/gallery-dl-web/backend:latest
     restart: unless-stopped
     environment:
       DATA_DIR: /data
@@ -49,7 +49,7 @@ services:
 
   frontend:
     build: ./frontend
-    image: ghcr.io/lumduan/gallery-dl-web-frontend:latest
+    image: ghcr.io/lumduan/gallery-dl-web/frontend:latest
     restart: unless-stopped
     environment:
       BACKEND_URL: http://backend:8000
