@@ -84,8 +84,9 @@ independently.
 - [x] Stall detection reworked into two independent deadlines (liveness vs progress) after the
       original 90 s single deadline was found killing healthy jobs mid-enumeration
 - [x] live download E2E with **real** cookies — 1423 files / 0.84 GB across 3 profiles
-- [x] tag `v0.1.0` (2026-07-23) → first ghcr publish of
-      `ghcr.io/lumduan/gallery-dl-web/{backend,frontend}:{latest,v0.1.0}`
+- [x] tag `v0.1.0` (2026-07-23) → first ghcr publish, under the original package names
+      `ghcr.io/lumduan/gallery-dl-web-{backend,frontend}:{latest,v0.1.0}` (still pullable; see the
+      rename in phase 5)
 
 ### 5 · Queue control — ✅ DONE
 Prompted by a live incident: two large profiles held both concurrency slots for hours, two more sat
@@ -103,12 +104,15 @@ at `queued` with no explanation, and a browser refresh lost the only link to a r
 - [x] 19 new backend tests (150 total, 90% coverage); frontend lint + typecheck + build green
 - [x] tag `v0.2.0` (2026-07-23) → ghcr publish of
       `ghcr.io/lumduan/gallery-dl-web/{backend,frontend}:{latest,v0.2.0}`
-- [x] published images renamed from `gallery-dl-web-{backend,frontend}` to the nested
+- [x] published images **renamed** from `gallery-dl-web-{backend,frontend}` to the nested
       `gallery-dl-web/{backend,frontend}`. A privacy fix required deleting and recreating the
-      GitHub repo (see below), which orphaned the original ghcr packages: they kept an internal
-      link to the deleted repository, so the workflow's `GITHUB_TOKEN` could no longer push to them
-      (`permission_denied: write_package`) and the recreated repo could not be re-attached. Fresh
-      package names have no such link and are created correctly by the workflow itself.
+      GitHub repo (see the note below), which orphaned the original ghcr packages: each still holds
+      an internal link to the deleted repository, so the workflow's `GITHUB_TOKEN` can no longer
+      push to them (`permission_denied: write_package`) and the recreated repo cannot be attached —
+      the package settings page will not offer a repo whose id differs from the stale link. A
+      package name that never existed has no such link and is created correctly by the workflow
+      itself. **The old packages are untouched and remain pullable**, so `v0.1.0` images stay
+      available at the original names; everything from this point publishes to the nested ones.
 
 > **Note on the repository history.** `test_errors.py` was originally committed with a real
 > Facebook username and that person's photo/album ids pasted in as "verbatim" stderr. All of it was
