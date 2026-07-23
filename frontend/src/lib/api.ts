@@ -6,10 +6,17 @@ export interface JobSummary {
   id: string;
   url: string;
   platform: string;
+  /** Profile display name; null for single-post URLs. */
+  profile: string | null;
   status: string;
   created_at: number;
   started_at: number | null;
   ended_at: number | null;
+  paused_at: number | null;
+  downloaded: number;
+  skipped: number;
+  file_count: number;
+  last_activity_ts: number | null;
   final_summary: Record<string, unknown> | null;
 }
 
@@ -57,9 +64,24 @@ export async function getJob(jobId: string): Promise<JobSummary> {
   return asJson(await fetch(`/api/jobs/${jobId}`));
 }
 
-export async function listJobs(): Promise<JobSummary[]> {
-  return asJson(await fetch("/api/jobs"));
+export async function listJobs(activeOnly = false): Promise<JobSummary[]> {
+  return asJson(await fetch(activeOnly ? "/api/jobs?active=1" : "/api/jobs"));
 }
+
+/**
+ * Pause / resume / stop one job.
+ *
+ * Pause SIGSTOPs the worker and hands its concurrency slot to a queued profile; resume continues
+ * the same worker where it left off; cancel is terminal but keeps the files already downloaded.
+ * The backend answers 409 when the action does not apply to the job's current state.
+ */
+async function controlJob(jobId: string, action: string): Promise<JobSummary> {
+  return asJson(await fetch(`/api/jobs/${jobId}/${action}`, { method: "POST" }));
+}
+
+export const pauseJob = (jobId: string) => controlJob(jobId, "pause");
+export const resumeJob = (jobId: string) => controlJob(jobId, "resume");
+export const cancelJob = (jobId: string) => controlJob(jobId, "cancel");
 
 export async function getSettings(): Promise<SettingsResponse> {
   return asJson(await fetch("/api/settings"));

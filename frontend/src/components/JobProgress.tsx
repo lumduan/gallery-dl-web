@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { JobControls } from "@/components/JobControls";
 import { getJob, jobZipUrl, type JobSummary } from "@/lib/api";
-import type { JobEvent } from "@/lib/events";
+import { JOB_EVENT_TYPES, type JobEvent } from "@/lib/events";
 
 function describe(ev: JobEvent): string {
   switch (ev.type) {
@@ -30,10 +31,16 @@ function describe(ev: JobEvent): string {
           })`;
     case "retrying":
       return `↻ retrying (attempt ${ev.attempt ?? 1})`;
+    case "paused":
+      return "⏸ Paused — worker suspended, queue slot released";
+    case "resumed":
+      return `▶ Resumed after ${Math.round(ev.paused_for ?? 0)}s`;
     case "error":
       return `${ev.fatal ? "⛔ " : "⚠ "}${ev.message ?? ev.kind ?? "error"}`;
     case "completed":
       return `Completed — ${ev.downloaded ?? 0} file(s)`;
+    case "cancelled":
+      return `⏹ Stopped — ${ev.downloaded ?? 0} file(s) kept`;
     case "failed":
       return ev.reason === "rate-limited"
         ? "⏸ Stopped — the platform rate-limited this account"
@@ -49,11 +56,15 @@ function StatusBadge({ status }: { status: string }) {
     queued: "badge-warning",
     running: "badge-info",
     started: "badge-info",
+    paused: "badge-warning",
     completed: "badge-success",
     failed: "badge-error",
+    cancelled: "badge-ghost",
   };
   return <span className={`badge ${map[status] ?? "badge-ghost"}`}>{status}</span>;
 }
+
+const TERMINAL_STATUSES = ["completed", "failed", "cancelled"];
 
 export function JobProgress({ jobId }: { jobId: string }) {
   const [events, setEvents] = useState<JobEvent[]>([]);
@@ -104,12 +115,15 @@ export function JobProgress({ jobId }: { jobId: string }) {
       } else if (
         ev.type === "file" ||
         ev.type === "progress" ||
-        ev.type === "completed" ||
-        ev.type === "failed"
+        TERMINAL_STATUSES.includes(ev.type)
       ) {
         setStall(null);
       }
-      if (ev.type === "completed" || ev.type === "failed") {
+      // Pause/resume also arrive over SSE, so the badge stays right even when the action was
+      // taken from the Queue page in another tab.
+      if (ev.type === "paused") setStatus("paused");
+      if (ev.type === "resumed") setStatus("running");
+      if (TERMINAL_STATUSES.includes(ev.type)) {
         setStatus(ev.type);
         setTerminalEvent(ev);
       }
@@ -121,19 +135,7 @@ export function JobProgress({ jobId }: { jobId: string }) {
         /* ignore malformed */
       }
     };
-    [
-      "queued",
-      "started",
-      "prepare",
-      "file",
-      "progress",
-      "heartbeat",
-      "stalled",
-      "retrying",
-      "error",
-      "completed",
-      "failed",
-    ].forEach((t) => es.addEventListener(t, onMsg));
+    JOB_EVENT_TYPES.forEach((t) => es.addEventListener(t, onMsg));
     es.addEventListener("end", () => es.close());
     es.onerror = () => {
       /* EventSource auto-reconnects; backend replays history on connect */
@@ -145,7 +147,7 @@ export function JobProgress({ jobId }: { jobId: string }) {
     };
   }, [jobId]);
 
-  const terminal = status === "completed" || status === "failed";
+  const terminal = TERMINAL_STATUSES.includes(status);
   // Prefer the live terminal event; fall back to the summary fetched at mount (page reload case).
   const finalReason = (terminalEvent ??
     (summary?.final_summary as
@@ -160,7 +162,10 @@ export function JobProgress({ jobId }: { jobId: string }) {
         <div className="card-body gap-3">
           <div className="flex items-center justify-between gap-2">
             <h2 className="card-title truncate">Job {jobId.slice(0, 12)}…</h2>
-            <StatusBadge status={status} />
+            <div className="flex items-center gap-2">
+              <StatusBadge status={status} />
+              <JobControls jobId={jobId} status={status} onChanged={setStatus} />
+            </div>
           </div>
           {summary && (
             <p className="text-sm text-base-content/70 break-all">{summary.url}</p>
@@ -179,19 +184,44 @@ export function JobProgress({ jobId }: { jobId: string }) {
               <div className="stat-value text-error">{counts.failed}</div>
             </div>
           </div>
-          {!terminal && stall && (
+          {status === "paused" && (
+            <div className="alert alert-warning flex-col items-start gap-1 py-2 text-sm">
+              <span className="font-semibold">⏸ Paused — the worker is suspended.</span>
+              <span>
+                It keeps its place in the profile, so resuming continues from here instead of
+                starting the walk over. Its queue slot has been freed for another profile. A very
+                long pause can drop the connection to the platform; gallery-dl retries when it
+                resumes.
+              </span>
+            </div>
+          )}
+          {!terminal && status !== "paused" && stall && (
             <div className="alert alert-warning py-2 text-sm">{stall}</div>
           )}
-          {!terminal && !stall && alive !== null && counts.downloaded + counts.skipped === 0 && (
+          {status === "queued" && summary?.started_at != null && (
+            <div className="alert alert-info py-2 text-sm">
+              Resuming — waiting for a free download slot.
+            </div>
+          )}
+          {!terminal && status !== "paused" && !stall && alive !== null && counts.downloaded + counts.skipped === 0 && (
             <div className="alert alert-info py-2 text-sm">
               Looking through the profile… ({Math.round(alive)}s). Large or rate-limited profiles
               can take several minutes before the first file appears.
             </div>
           )}
-          {terminal && status === "completed" && (
+          {terminal && status !== "failed" && counts.downloaded > 0 && (
             <a className="btn btn-primary btn-sm self-start" href={jobZipUrl(jobId)}>
               ⬇ Download all (.zip)
             </a>
+          )}
+          {status === "cancelled" && (
+            <div className="alert flex-col items-start gap-1 py-2 text-sm">
+              <span className="font-semibold">⏹ Stopped.</span>
+              <span>
+                {counts.downloaded} file(s) downloaded before you stopped were kept, and this
+                profile&apos;s gallery has been updated. Re-running it skips them and continues.
+              </span>
+            </div>
           )}
           {terminal && status === "failed" && finalReason && (
             <div

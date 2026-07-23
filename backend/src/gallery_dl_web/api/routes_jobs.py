@@ -16,12 +16,12 @@ from sse_starlette.sse import EventSourceResponse
 
 from gallery_dl_web.api.deps import get_job_manager, get_settings
 from gallery_dl_web.config import Settings
-from gallery_dl_web.jobs.manager import JobManager
+from gallery_dl_web.jobs.manager import JobControlError, JobManager
 from gallery_dl_web.schemas.jobs import JobCreateRequest, JobResponse, JobSummary
 
 router = APIRouter(tags=["jobs"])
 
-_TERMINAL = frozenset({"completed", "failed"})
+_TERMINAL = frozenset({"completed", "failed", "cancelled"})
 
 
 def detect_platform(url: str) -> str | None:
@@ -49,8 +49,12 @@ async def create_job(
 
 
 @router.get("/jobs", response_model=list[JobSummary])
-async def list_jobs(mgr: JobManager = Depends(get_job_manager)) -> list[JobSummary]:
-    return [JobSummary(**s.to_summary()) for s in mgr.list_jobs()]
+async def list_jobs(
+    active: bool = False,
+    mgr: JobManager = Depends(get_job_manager),
+) -> list[JobSummary]:
+    """All jobs, newest first. ``?active=1`` keeps only queued/running/paused ones."""
+    return [JobSummary(**s.to_summary()) for s in mgr.list_jobs(active_only=active)]
 
 
 @router.get("/jobs/{job_id}", response_model=JobSummary)
@@ -62,6 +66,45 @@ async def get_job(
     if state is None:
         raise HTTPException(status_code=404, detail="job not found")
     return JobSummary(**state.to_summary())
+
+
+async def _control(
+    action: str,
+    job_id: str,
+    mgr: JobManager,
+) -> JobSummary:
+    """Run one pause/resume/cancel action, mapping manager errors to HTTP status codes."""
+    try:
+        if action == "pause":
+            state = await mgr.pause(job_id)
+        elif action == "resume":
+            state = await mgr.resume(job_id)
+        else:
+            state = await mgr.cancel(job_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="job not found") from None
+    except JobControlError as exc:
+        # The request is well-formed but does not apply to the job's current state.
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    return JobSummary(**state.to_summary())
+
+
+@router.post("/jobs/{job_id}/pause", response_model=JobSummary)
+async def pause_job(job_id: str, mgr: JobManager = Depends(get_job_manager)) -> JobSummary:
+    """Suspend the worker (SIGSTOP) and hand its concurrency slot to a waiting job."""
+    return await _control("pause", job_id, mgr)
+
+
+@router.post("/jobs/{job_id}/resume", response_model=JobSummary)
+async def resume_job(job_id: str, mgr: JobManager = Depends(get_job_manager)) -> JobSummary:
+    """Continue a paused job once a concurrency slot is free again."""
+    return await _control("resume", job_id, mgr)
+
+
+@router.post("/jobs/{job_id}/cancel", response_model=JobSummary)
+async def cancel_job(job_id: str, mgr: JobManager = Depends(get_job_manager)) -> JobSummary:
+    """Stop a job for good. Files already downloaded are kept and the profile is reconciled."""
+    return await _control("cancel", job_id, mgr)
 
 
 @router.get("/jobs/{job_id}/events")

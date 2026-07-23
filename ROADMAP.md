@@ -12,6 +12,7 @@ flowchart TD
     P2 --> P4["4 · Integrate and ship<br/>DONE — v0.1.0"]
     P3 --> P4
     D1["D1 · Operator gets cookies<br/>DONE"] --> P4
+    P4 --> P5["5 · Queue control<br/>pause / resume / stop<br/>DONE"]
 
     classDef done     fill:#d4f4dd,stroke:#2d8a4e,color:#1a5c33
     classDef active   fill:#fff3cd,stroke:#cc9a06,color:#7a5c04
@@ -21,6 +22,7 @@ flowchart TD
     class P2 done
     class P3 done
     class P4 done
+    class P5 done
     class D1 done
 ```
 
@@ -30,6 +32,7 @@ flowchart TD
 | **2 · Backend crux** | ✅ DONE | gallery-dl subprocess worker (STDIN config → JSON-lines hooks), asyncio `JobManager` (fan-out + history replay), SSE route, cookie store, settings/files/health routes; ruff/mypy clean, pytest **89.8%** coverage | — |
 | **3 · Frontend** | ✅ DONE | Next.js pages: `/` (URL input + platform detect), `/jobs/[id]` (SSE progress + zip), `/settings` (cookies), `/downloads`; `EventSource` consumer; catch-all `/api/*` proxy route. typecheck + lint + build green | — |
 | **4 · Integrate and ship** | ✅ DONE | `docker-compose` (dev + prod + host-dir overlay); ghcr publish workflow; **live E2E verified** (real cookies, 1423 files across 3 profiles); **`v0.1.0` tagged 2026-07-23** → first ghcr publish | — |
+| **5 · Queue control** | ✅ DONE | `/queue` tab listing active + recent jobs; per-job **pause (SIGSTOP + slot release) / resume (SIGCONT) / stop (terminal `cancelled`)**; stop reconciles the profile's `metadata.json` | — |
 | **D1 · Operator cookies** | ✅ DONE | Real IG `sessionid` + FB cookies in use; live downloads confirmed 2026-07-23 | — |
 
 > **All phases are complete and `v0.1.0` is released.** Live E2E passes against real Instagram and
@@ -37,8 +40,9 @@ flowchart TD
 > account after a few hundred images in one run ("temporarily blocked from viewing images"); that
 > is a platform limit, not a defect, and the job now reports it verbatim.
 >
-> Next up is post-v0.1 work rather than a blocker: multi-account cookie storage, job cancellation
-> from the UI, and resuming a blocked Facebook run from gallery-dl's `&setextract` URL.
+> Next up is post-v0.1 work rather than a blocker: multi-account cookie storage, and resuming a
+> blocked Facebook run from gallery-dl's `&setextract` URL. (Job cancellation from the UI shipped
+> in phase 5.)
 
 ---
 
@@ -82,6 +86,21 @@ independently.
 - [x] live download E2E with **real** cookies — 1423 files / 0.84 GB across 3 profiles
 - [x] tag `v0.1.0` (2026-07-23) → first ghcr publish of
       `ghcr.io/lumduan/gallery-dl-web-{backend,frontend}:{latest,v0.1.0}`
+
+### 5 · Queue control — ✅ DONE
+Prompted by a live incident: two large profiles held both concurrency slots for hours, two more sat
+at `queued` with no explanation, and a browser refresh lost the only link to a running job.
+- [x] `/queue` tab — active (running / paused / queued, with "waiting — N ahead") + recent jobs,
+      polling `GET /api/jobs`; `GET /api/jobs?active=1` for the active filter
+- [x] `POST /api/jobs/{id}/{pause,resume,cancel}` (404 unknown, 409 wrong state)
+- [x] **Pause = SIGSTOP + hand the concurrency slot back**, so a waiting profile starts at once;
+      resume re-acquires a slot then SIGCONTs, continuing the same profile walk with no
+      re-enumeration. Paused wall-time is subtracted from every stall clock.
+- [x] **Stop = terminal `cancelled`** (not `failed`) — fetched files kept and `metadata.json`
+      reconciled immediately, via `media_paths()` so an all-skipped run still reconciles
+- [x] `PAUSE_MAX_SECONDS` (default 2 h) auto-stops a job left paused, so a suspended worker can't
+      be leaked
+- [x] 19 new backend tests (150 total, 90% coverage); frontend lint + typecheck + build green
 
 ### D1 · Operator cookies — ✅ DONE
 - **Primary (new): browser extension** — load `extension/` unpacked, set the server URL, click

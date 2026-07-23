@@ -8,11 +8,32 @@ export type JobEventType =
   | "heartbeat"
   | "stalled"
   | "retrying"
+  | "paused"
+  | "resumed"
   | "error"
   | "completed"
   | "failed"
+  | "cancelled"
   | "ping"
   | "end";
+
+/** Every event type the SSE stream can deliver — used to register EventSource listeners. */
+export const JOB_EVENT_TYPES: JobEventType[] = [
+  "queued",
+  "started",
+  "prepare",
+  "file",
+  "progress",
+  "heartbeat",
+  "stalled",
+  "retrying",
+  "paused",
+  "resumed",
+  "error",
+  "completed",
+  "failed",
+  "cancelled",
+];
 
 export interface JobEvent {
   type: JobEventType | string;
@@ -40,9 +61,12 @@ export interface JobEvent {
   /** heartbeat only: beat counter and seconds since the worker started. */
   beat?: number;
   elapsed?: number;
+  /** resumed only: how long the job was paused, in seconds. */
+  paused_for?: number;
   ts?: number;
 }
 
 export function isTerminal(type: string): boolean {
-  return type === "completed" || type === "failed";
+  // `cancelled` is terminal too — a deliberate stop, not a failure.
+  return type === "completed" || type === "failed" || type === "cancelled";
 }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import signal
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
@@ -52,6 +53,9 @@ class _FakeStdout:
 
     ``delay`` applies uniformly; ``delays`` gives a per-line schedule (the last value repeats),
     which is how "slow to produce the first file, then steady" extractions are modelled.
+
+    ``suspended`` models SIGSTOP: a stopped process emits nothing at all until it is continued.
+    Without it a "paused" fake worker keeps streaming and races the test to completion.
     """
 
     def __init__(
@@ -61,6 +65,7 @@ class _FakeStdout:
         self._delay = delay
         self._delays = list(delays) if delays else None
         self._index = 0
+        self.suspended = False
 
     def _next_delay(self) -> float:
         if self._delays:
@@ -83,6 +88,8 @@ class _FakeStdout:
         self._index += 1
         if delay:
             await asyncio.sleep(delay)
+        while self.suspended:  # SIGSTOPed: produce nothing until SIGCONT
+            await asyncio.sleep(0.01)
         if self._lines:
             return self._lines.pop(0)
         return b""
@@ -101,14 +108,27 @@ class FakeProc:
         # The manager drains stderr concurrently; give it a real stream so that path is exercised.
         self.stderr = _FakeStdout(stderr_lines or [])
         self.returncode = returncode
+        self.pid = 4242
         self.terminated = False
         self.killed = False
+        # Every signal the manager sent, in order — pause/resume/stop assert on this. The ordering
+        # matters: a SIGSTOPed process never handles SIGTERM, so SIGCONT must come first.
+        self.signals: list[int] = []
+
+    def send_signal(self, sig: int) -> None:
+        self.signals.append(sig)
+        if sig == signal.SIGSTOP:
+            self.stdout.suspended = True
+        elif sig == signal.SIGCONT:
+            self.stdout.suspended = False
 
     def terminate(self) -> None:
         self.terminated = True
+        self.signals.append(signal.SIGTERM)
 
     def kill(self) -> None:
         self.killed = True
+        self.signals.append(signal.SIGKILL)
 
     async def wait(self) -> int:
         return self.returncode

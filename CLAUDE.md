@@ -58,6 +58,8 @@ container. Enable both together in `.env`:
 - `backend/src/gallery_dl_web/api/routes_jobs.py` — SSE endpoint + zip.
 - `backend/src/gallery_dl_web/profiles/store.py` — per-profile `metadata.json` reconciliation.
 - `frontend/src/app/jobs/[id]/page.tsx` + `components/JobProgress.tsx` — SSE consumer.
+- `frontend/src/components/QueueList.tsx` — the `/queue` dashboard (polls `/api/jobs`, not SSE:
+  one poll carries every row's counters, where an EventSource per row would be N streams).
 - `docs/event-contract.md` — the shared SSE schema (change both sides together;
   `frontend/src/lib/events.ts` is its TS mirror).
 
@@ -79,8 +81,26 @@ corrupts the stream.
 (monotonic across retries), and overwrites `downloaded`/`skipped` on terminal events. Per-attempt
 counts from the worker are not authoritative.
 
-**Exactly one terminal event per job** (`completed` | `failed`), always. The manager synthesizes one
-if the worker dies silently, is cancelled, or exhausts retries; `stalled`/`retrying` are non-terminal.
+**Exactly one terminal event per job** (`completed` | `failed` | `cancelled`), always. The manager
+synthesizes one if the worker dies silently or exhausts retries; `stalled`/`retrying`/`heartbeat`/
+`paused`/`resumed` are non-terminal. `cancelled` is terminal but is **not** a failure — the operator
+asked for it, the fetched files are kept, and the UI must not render it red.
+
+**Pause is a real SIGSTOP, and the read loop — not `pause()` — owns the concurrency slot.**
+`pause()` signals the worker and flips the status; `_await_resume` releases the slot when the loop
+actually parks and re-acquires it before SIGCONT. Releasing in `pause()` looks equivalent but
+breaks a real race: a resume arriving before the loop noticed the pause finds the slot already gone
+and never re-acquires it, so the job runs outside `max_concurrent_jobs` — and the worker stays
+suspended with nothing left to continue it. That is why the loop enters `_await_resume` on
+`paused_at is not None`, not on `pause_requested`. On resume, `first_file_ts` **and** `last_file_ts`
+shift by the same amount so `_stall_threshold`'s `avg = (last-first)/(n-1)` is unchanged.
+
+**The read loop's wait is `asyncio.wait({read, control})`, and the pending `readline()` survives
+across iterations.** Cancelling a partially-consumed read would drop whatever the worker already
+wrote. `state.control_event` is cleared at the *top* of the loop, before the flags are tested, so an
+action landing mid-iteration leaves the event set and the next waiter returns immediately instead of
+being swallowed. `_kill_worker` sends SIGCONT before SIGTERM — a stopped process handles no signals
+and `proc.wait()` would never return.
 
 **Stall detection is two independent deadlines, and conflating them breaks downloads.**
 - *liveness* — no line at all on worker stdout, not even a `heartbeat`, within
@@ -109,6 +129,11 @@ the tree as root onto an NFS export with `root_squash` (lands as `nobody:nogroup
 **Profile metadata lives outside `downloads/`** (`<data_dir>/profiles/…/metadata.json`) so it never
 appears in `GET /api/files` or inside a profile zip, and gallery-dl can't clobber it. The on-disk
 files are the source of truth; `metadata.json` is a rebuildable index.
+
+**Reconcile keys off `media_paths()` (any `file` event), the zip route off `downloaded_paths()`
+(downloaded only).** A stopped job — or any re-run that found everything already archived — emits
+skip events only; keying reconcile off downloads alone left its gallery showing stale counts. The
+zip must keep shipping only newly fetched files.
 
 **The per-profile archive key ≠ the profile folder name.** The archive is named from the URL
 (`profiles/urls.py:extract_username`), the folder from gallery-dl's `{username}` (a display name).

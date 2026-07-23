@@ -190,3 +190,78 @@ async def test_missing_cookies_via_http(app: FastAPI) -> None:
     assert body["final_summary"]["reason"] == "missing-cookies"
     # Avoid an unawaited-task warning in the loop teardown.
     await asyncio.sleep(0)
+
+
+# ------------------------------------------------------------------ pause / resume / cancel
+
+
+_SLOW = [
+    json.dumps({"type": "started", "url": "u"}),
+    json.dumps({"type": "heartbeat", "beat": 1, "elapsed": 1}),
+    json.dumps({"type": "completed", "exit_status": 0}),
+]
+
+
+async def _long_running_job(app: FastAPI, cookie_store, fake_spawn, monkeypatch) -> str:
+    cookie_store.update(ig_sessionid="SID")
+    app.state.settings.stall_liveness_seconds = 30.0
+    app.state.settings.stall_warmup_seconds = 30.0
+    app.state.settings.stall_kill_grace_seconds = 0.05
+    monkeypatch.setattr(mgr_mod, "spawn_worker", fake_spawn(_SLOW, delay=0.3))
+    mgr = app.state.job_manager
+    jid = await mgr.create_job("https://instagram.com/someone/", "instagram")
+    for _ in range(200):  # let the worker spawn so pause has something to signal
+        if mgr.get(jid).started_at is not None:
+            break
+        await asyncio.sleep(0.01)
+    return str(jid)
+
+
+async def test_pause_resume_cancel_round_trip(
+    app: FastAPI, cookie_store, fake_spawn, monkeypatch
+) -> None:
+    jid = await _long_running_job(app, cookie_store, fake_spawn, monkeypatch)
+    async with await _client(app) as client:
+        r = await client.post(f"/api/jobs/{jid}/pause")
+        assert r.status_code == 200
+        assert r.json()["status"] == "paused"
+        assert r.json()["paused_at"] is not None
+
+        # Pausing twice is a conflict, not a silent no-op.
+        assert (await client.post(f"/api/jobs/{jid}/pause")).status_code == 409
+
+        r = await client.post(f"/api/jobs/{jid}/resume")
+        assert r.status_code == 200
+        assert r.json()["status"] in {"queued", "running"}
+
+        # Resuming a job that is not paused is likewise a conflict.
+        assert (await client.post(f"/api/jobs/{jid}/resume")).status_code == 409
+
+        r = await client.post(f"/api/jobs/{jid}/cancel")
+        assert r.status_code == 200
+        assert r.json()["status"] == "cancelled"
+        # Terminal: every further control action conflicts.
+        assert (await client.post(f"/api/jobs/{jid}/cancel")).status_code == 409
+        assert (await client.post(f"/api/jobs/{jid}/pause")).status_code == 409
+
+
+async def test_control_endpoints_404_on_unknown_job(app: FastAPI) -> None:
+    async with await _client(app) as client:
+        for action in ("pause", "resume", "cancel"):
+            r = await client.post(f"/api/jobs/nope/{action}")
+            assert r.status_code == 404, action
+
+
+async def test_list_jobs_active_filter(app: FastAPI, cookie_store, fake_spawn, monkeypatch) -> None:
+    """The queue page polls ?active=1; a finished job must drop out of it."""
+    jid = await _long_running_job(app, cookie_store, fake_spawn, monkeypatch)
+    async with await _client(app) as client:
+        active = (await client.get("/api/jobs", params={"active": 1})).json()
+        assert [j["id"] for j in active] == [jid]
+        # Live counters and the profile name travel with the summary — no SSE needed per row.
+        assert active[0]["profile"] == "someone"
+        assert "downloaded" in active[0] and "skipped" in active[0]
+
+        await client.post(f"/api/jobs/{jid}/cancel")
+        assert (await client.get("/api/jobs", params={"active": 1})).json() == []
+        assert [j["id"] for j in (await client.get("/api/jobs")).json()] == [jid]

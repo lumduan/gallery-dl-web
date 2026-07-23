@@ -44,6 +44,11 @@ class Settings(BaseSettings):
     zip_ttl_seconds: int = 300  # how long a generated profile .zip lives after last access
     thumbnail_size: int = 300  # longest-side px for generated thumbnails
 
+    # Pausing SIGSTOPs the worker and hands its concurrency slot back, so a paused job is not
+    # terminal and GC never reaps it — it would keep a suspended gallery-dl process, its memory and
+    # an open archive SQLite handle alive forever. Auto-cancel after this long (0 disables).
+    pause_max_seconds: float = 7200.0
+
     # Per-request pacing -> gallery-dl `sleep-request` (a [min, max] range it samples per request).
     # Both platforms rate-limit scraping. Facebook is the harsher one: with no delay it blocked an
     # account after ~767 images in a single run ("You've been temporarily blocked from viewing

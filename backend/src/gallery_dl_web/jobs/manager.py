@@ -19,6 +19,7 @@ import contextlib
 import json
 import logging
 import os
+import signal
 import sys
 import time
 from collections import deque
@@ -37,7 +38,11 @@ logger = logging.getLogger(__name__)
 
 _GC_INTERVAL_SECONDS = 300
 _GC_MAX_AGE_SECONDS = 3600
-_TERMINAL_EVENTS = frozenset({"completed", "failed"})
+_TERMINAL_EVENTS = frozenset({"completed", "failed", "cancelled"})
+# POSIX-only. Resolved via getattr so importing the module never fails on a non-POSIX host; pause()
+# reports "unsupported" there instead of raising.
+_SIGSTOP: signal.Signals | None = getattr(signal, "SIGSTOP", None)
+_SIGCONT: signal.Signals | None = getattr(signal, "SIGCONT", None)
 # How much worker stderr to keep for the failure message (gallery-dl can be very chatty).
 _STDERR_TAIL_LINES = 50
 _STDERR_TAIL_CHARS = 2000
@@ -86,6 +91,10 @@ def _annotate_failure(event: dict[str, Any], stderr_tail: deque[str]) -> None:
         event["message"] = f"{existing}\n{tail}" if existing else tail
 
 
+class JobControlError(Exception):
+    """A pause/resume/cancel request that does not apply to the job's current state."""
+
+
 class JobManager:
     def __init__(
         self,
@@ -98,6 +107,10 @@ class JobManager:
         self._profiles = profile_store
         self._jobs: dict[str, JobState] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        # Live worker per job, so pause/resume/cancel can signal it from an HTTP handler. Without
+        # this the process is reachable only from inside _spawn_and_stream and a cancelled task
+        # would orphan it.
+        self._procs: dict[str, asyncio.subprocess.Process] = {}
         self._semaphore = asyncio.BoundedSemaphore(max(1, settings.max_concurrent_jobs))
         self._lock = asyncio.Lock()
 
@@ -111,6 +124,9 @@ class JobManager:
     ) -> str:
         job_id = _new_job_id()
         state = JobState(id=job_id, url=url, platform=platform, status=JobStatus.QUEUED)
+        # Best-effort display name for the queue UI before any file lands. gallery-dl's actual
+        # folder is its {username} display name, which usually differs — _record_file upgrades it.
+        state.profile = extract_username(url, platform)
         # Record "queued" directly into history (no subscribers yet; SSE replays it on connect).
         state.events.append({"type": "queued", "job_id": job_id, "url": url, "ts": time.time()})
         async with self._lock:
@@ -131,8 +147,9 @@ class JobManager:
     def get(self, job_id: str) -> JobState | None:
         return self._jobs.get(job_id)
 
-    def list_jobs(self) -> list[JobState]:
-        return sorted(self._jobs.values(), key=lambda s: s.created_at, reverse=True)
+    def list_jobs(self, active_only: bool = False) -> list[JobState]:
+        jobs = [s for s in self._jobs.values() if s.is_active or not active_only]
+        return sorted(jobs, key=lambda s: s.created_at, reverse=True)
 
     def subscribe(self, state: JobState) -> asyncio.Queue[dict[str, Any]]:
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=256)
@@ -143,12 +160,156 @@ class JobManager:
     def unsubscribe(state: JobState, queue: asyncio.Queue[dict[str, Any]]) -> None:
         state.subscribers.discard(queue)
 
+    # ------------------------------------------------------------------ operator control
+
+    async def pause(self, job_id: str) -> JobState:
+        """Suspend a job's worker and hand its concurrency slot back.
+
+        SIGSTOP freezes gallery-dl exactly where it is, so resuming continues the same profile walk
+        instead of re-enumerating it from the top (which for a 2000-file Instagram profile means
+        ~30 minutes of paginated requests before a single new file). Releasing the slot is the
+        point of the feature: it lets a queued profile start straight away.
+        """
+        state = self._require(job_id)
+        if state.is_terminal:
+            raise JobControlError(f"job is already {state.status.value}")
+        if state.pause_requested:
+            raise JobControlError("job is already paused")
+        proc = self._procs.get(job_id)
+        if proc is not None:
+            if _SIGSTOP is None:
+                raise JobControlError("pausing a running worker is not supported on this platform")
+            try:
+                proc.send_signal(_SIGSTOP)
+            except ProcessLookupError:
+                raise JobControlError("worker has already exited") from None
+
+        state.pause_requested = True
+        state.control_event.set()
+        state.resume_event.clear()
+        state.paused_at = time.time()
+        state.status = JobStatus.PAUSED
+        # The slot is handed back by the read loop when it parks (_await_resume), not here — see
+        # that method. Releasing it here would break the pause/resume race: a resume arriving
+        # before the loop noticed the pause would leave the job running without a slot.
+        await self._emit(
+            state,
+            {
+                "type": "paused",
+                "job_id": job_id,
+                "downloaded": state.downloaded,
+                "skipped": state.skipped,
+                "ts": time.time(),
+            },
+        )
+        logger.info("job %s paused", job_id)
+        return state
+
+    async def resume(self, job_id: str) -> JobState:
+        """Clear the pause and let the job's own task re-acquire a slot and SIGCONT the worker.
+
+        Deliberately does not wait for a free slot — that would block the HTTP request for as long
+        as another download takes. The job shows as ``queued`` (with ``started_at`` already set)
+        until a slot frees, then emits ``resumed``.
+        """
+        state = self._require(job_id)
+        if state.is_terminal:
+            raise JobControlError(f"job is already {state.status.value}")
+        if not state.pause_requested:
+            raise JobControlError("job is not paused")
+        state.pause_requested = False
+        state.status = JobStatus.QUEUED
+        state.control_event.set()
+        state.resume_event.set()
+        logger.info("job %s resume requested", job_id)
+        return state
+
+    async def cancel(self, job_id: str, message: str | None = None) -> JobState:
+        """Stop a job for good, keeping whatever it already downloaded.
+
+        Terminal state is ``cancelled``, not ``failed`` — the operator asked for this. The files
+        fetched so far stay on disk and ``_run_job``'s finally reconciles that profile's
+        metadata.json, so the gallery reflects the partial download immediately.
+        """
+        state = self._require(job_id)
+        if state.is_terminal:
+            raise JobControlError(f"job is already {state.status.value}")
+        state.cancel_requested = True
+        state.control_event.set()
+        # Unblock a read loop parked on the pause, and make sure a paused process can actually
+        # receive SIGTERM (a stopped process handles nothing until it is continued, and
+        # proc.wait() would never return).
+        state.resume_event.set()
+        proc = self._procs.get(job_id)
+        if proc is not None:
+            await self._kill_worker(proc)
+            reason, text = "cancelled", "download stopped by the operator"
+        else:
+            # Never spawned (queued, or paused before its first slot): nothing to kill, and the
+            # task is parked on the semaphore where a flag cannot reach it.
+            task = self._tasks.get(job_id)
+            if task is not None:
+                task.cancel()
+            reason, text = "cancelled", "download stopped by the operator before it started"
+        if message:
+            text = message
+        if not state.is_terminal:
+            await self._emit(
+                state,
+                {
+                    "type": "cancelled",
+                    "job_id": job_id,
+                    "exit_status": 0,
+                    "reason": reason,
+                    "message": text,
+                    "downloaded": state.downloaded,
+                    "skipped": state.skipped,
+                    "ts": time.time(),
+                },
+            )
+        logger.info("job %s cancelled", job_id)
+        return state
+
+    def _require(self, job_id: str) -> JobState:
+        state = self._jobs.get(job_id)
+        if state is None:
+            raise KeyError(job_id)
+        return state
+
+    # ------------------------------------------------------------------ concurrency slots
+
+    async def _enter_slot(self, state: JobState) -> None:
+        """Wait for a free concurrency slot, honouring a pause requested while queued.
+
+        Replaces ``async with self._semaphore``: a context manager cannot hand the slot back early,
+        which is exactly what pause needs to do.
+        """
+        while True:
+            if state.pause_requested:
+                state.status = JobStatus.PAUSED
+                await state.resume_event.wait()
+                state.resume_event.clear()
+            if not state.is_terminal:
+                state.status = JobStatus.QUEUED  # waiting for a slot, whether new or resuming
+            await self._semaphore.acquire()
+            state.holds_slot = True
+            if not state.pause_requested:
+                state.status = JobStatus.RUNNING
+                return
+            self._leave_slot(state)  # paused while we waited — give it straight back
+
+    def _leave_slot(self, state: JobState) -> None:
+        """Release the concurrency slot. Idempotent — BoundedSemaphore rejects an over-release."""
+        if state.holds_slot:
+            state.holds_slot = False
+            self._semaphore.release()
+
     # ------------------------------------------------------------------ run loop
 
     async def _run_job(self, state: JobState, options: dict[str, Any]) -> None:
         try:
-            async with self._semaphore:
-                state.status = JobStatus.RUNNING
+            await self._enter_slot(state)
+            try:
                 state.started_at = time.time()
                 # The worker emits the authoritative "started" event (per the event contract);
                 # we only flip the internal status here to avoid a duplicate on the wire.
@@ -187,17 +348,21 @@ class JobManager:
                     return
 
                 await self._spawn_and_stream(state, options, cookies)
+            finally:
+                self._leave_slot(state)
         except asyncio.CancelledError:
-            logger.info("job %s cancelled", state.id)
+            logger.info("job %s task cancelled", state.id)
             if not state.is_terminal:
                 await self._emit(
                     state,
                     {
-                        "type": "failed",
+                        "type": "cancelled",
                         "job_id": state.id,
-                        "exit_status": 2,
+                        "exit_status": 0,
                         "reason": "cancelled",
-                        "message": "job cancelled",
+                        "message": "download stopped",
+                        "downloaded": state.downloaded,
+                        "skipped": state.skipped,
                         "ts": time.time(),
                     },
                 )
@@ -219,6 +384,7 @@ class JobManager:
         finally:
             state.ended_at = time.time()
             self._tasks.pop(state.id, None)
+            self._procs.pop(state.id, None)
             if self._profiles is not None and state.is_terminal:
                 await self._reconcile_profile(state)
 
@@ -264,21 +430,40 @@ class JobManager:
         return None
 
     async def _reconcile_profile(self, state: JobState) -> None:
-        """After a job, rebuild the affected profile's metadata.json. Never fails the job."""
-        paths = state.downloaded_paths()
+        """After a job, rebuild the affected profile's metadata.json. Never fails the job.
+
+        Uses ``media_paths`` (downloaded *or* skipped) rather than ``downloaded_paths``: a stopped
+        job — or any re-run that found everything already archived — has skip events only, and
+        would otherwise leave the gallery showing stale counts.
+        """
+        paths = state.media_paths()
         if not paths or self._profiles is None:
             return
-        try:
-            rel = Path(paths[0]).resolve().relative_to(self._settings.downloads_dir.resolve())
-            platform, name = rel.parts[0], rel.parts[1]
-        except (ValueError, IndexError):
+        found = self._profile_of(paths[0])
+        if found is None:
             return
-        if platform not in {"instagram", "facebook"} or not name:
-            return
+        platform, name = found
         try:
             await self._profiles.reconcile(platform, name, archive_path=state.archive_path)
         except Exception:  # noqa: BLE001
             logger.exception("metadata reconcile failed for %s/%s", platform, name)
+
+    def _profile_of(self, path: str | None) -> tuple[str, str] | None:
+        """Map a downloaded file path to its ``(platform, profile-folder)``, or None."""
+        if not path:
+            return None
+        try:
+            rel = Path(path).resolve().relative_to(self._settings.downloads_dir.resolve())
+            platform, name = rel.parts[0], rel.parts[1]
+        except (ValueError, IndexError, OSError):
+            return None
+        if platform not in {"instagram", "facebook"} or not name:
+            return None
+        return platform, name
+
+    def _profile_folder(self, path: str | None) -> str | None:
+        found = self._profile_of(path)
+        return found[1] if found else None
 
     async def _spawn_and_stream(
         self,
@@ -298,18 +483,27 @@ class JobManager:
 
         attempt = 0
         while True:
+            if state.cancel_requested:
+                return  # cancel() already emitted the terminal event
             logger.info(
                 "spawning worker for job %s (%s, attempt %d)", state.id, state.platform, attempt + 1
             )
             proc = await spawn_worker(python, payload)
+            # Publish the process so pause/resume/cancel can signal it from an HTTP handler.
+            self._procs[state.id] = proc
             stderr_tail: deque[str] = deque(maxlen=_STDERR_TAIL_LINES)
             drain = asyncio.create_task(self._drain_stderr(state, proc, stderr_tail))
-            outcome = await self._stream_with_stall(state, proc, attempt, stderr_tail)
+            try:
+                outcome = await self._stream_with_stall(state, proc, attempt, stderr_tail)
+            finally:
+                self._procs.pop(state.id, None)
 
-            if outcome == "terminal":
+            # A cancel kills the worker, so the read loop usually sees a plain EOF — check the flag
+            # as well, or the retry path would respawn the job we were just asked to stop.
+            if outcome == "terminal" or outcome == "cancelled" or state.cancel_requested:
                 await self._stop_drain(drain)
                 await self._reap(proc)
-                return
+                return  # on cancel, cancel() owns the terminal event
 
             stalled = outcome == "stalled"
             warmup = state.file_count == 0
@@ -427,7 +621,8 @@ class JobManager:
         attempt: int,
         stderr_tail: deque[str] | None = None,
     ) -> str:
-        """Read worker stdout under two deadlines. Returns 'terminal' | 'stalled' | 'eof'.
+        """Read worker stdout under two deadlines. Returns 'terminal' | 'stalled' | 'eof' |
+        'cancelled'.
 
         * **liveness** — no line at all (not even a heartbeat) within ``stall_liveness_seconds``
           means the process is wedged, not slow.
@@ -436,6 +631,12 @@ class JobManager:
 
         Splitting the two is the whole point: gallery-dl is legitimately silent for minutes while
         it enumerates a profile, so a single "any output" deadline killed healthy jobs.
+
+        Operator control (pause/cancel/resume) is checked at the TOP of the loop and the wait wakes
+        on ``state.control_event``, so a click takes effect at once rather than at the next
+        deadline (up to 60 s away — which a user clicking Resume would experience as a dead button).
+        The pending ``readline()`` is held ACROSS iterations and never cancelled: cancelling a
+        partially-consumed read would drop whatever the worker had already written.
         """
         stdout = proc.stdout
         assert stdout is not None
@@ -443,72 +644,162 @@ class JobManager:
         liveness = max(1.0, self._settings.stall_liveness_seconds)
         last_line_ts = started
         heartbeat_seen = False
-        while True:
-            now = time.time()
-            progress_deadline = self._stall_threshold(state, attempt)
-            since_progress = now - (state.last_activity_ts or started)
-            if since_progress >= progress_deadline:
-                return "stalled"
-            # Wake at whichever deadline comes first so neither can overshoot.
-            until_liveness = liveness - (now - last_line_ts)
-            until_progress = progress_deadline - since_progress
-            wait = max(0.05, min(until_liveness, until_progress))
-            try:
-                raw = await asyncio.wait_for(stdout.readline(), timeout=wait)
-            except TimeoutError:
-                # Only treat silence as a wedge once we know this worker DOES send heartbeats —
-                # otherwise the progress deadline above is the sole authority.
-                if heartbeat_seen and time.time() - last_line_ts >= liveness:
-                    logger.warning(
-                        "job %s: no worker output for %.0fs despite heartbeats; assuming wedged",
-                        state.id,
-                        liveness,
-                    )
+        read: asyncio.Task[bytes] | None = None
+        control: asyncio.Task[bool] | None = None
+        try:
+            while True:
+                # Clear BEFORE testing the flags: an action landing between the clear and the wait
+                # leaves the event set, so the waiter created below returns immediately. Clearing
+                # after the test would let that action be swallowed.
+                state.control_event.clear()
+                if state.cancel_requested:
+                    return "cancelled"
+                # `paused_at` (not just `pause_requested`) so a resume that beat the loop here
+                # still gets its SIGCONT — see _await_resume.
+                if state.pause_requested or state.paused_at is not None:
+                    shift = await self._await_resume(state, proc)
+                    if shift is None:
+                        return "cancelled"
+                    # Paused wall-time must not count against any deadline.
+                    started += shift
+                    last_line_ts += shift
+                    continue
+                now = time.time()
+                progress_deadline = self._stall_threshold(state, attempt)
+                since_progress = now - (state.last_activity_ts or started)
+                if since_progress >= progress_deadline:
                     return "stalled"
-                continue
-            if not raw:  # EOF
-                return "eof"
-            last_line_ts = time.time()
-            line = raw.decode("utf-8", errors="replace").strip()
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                logger.warning("job %s: worker emitted non-JSON line: %s", state.id, line[:200])
-                continue
-            if not isinstance(event, dict) or "type" not in event:
-                continue
-            etype = event.get("type")
-            if etype == "progress":
-                continue  # the manager owns job-level progress (monotonic across retries)
-            if etype == "heartbeat":
-                heartbeat_seen = True
-                await self._emit(state, event)  # liveness only — does NOT reset the progress clock
-                continue
-            if etype == "prepare":
-                # Real work: gallery-dl resolved a file. Counts as progress even if no `file`
-                # event follows (filtered items, or a phase that yields nothing downloadable).
-                state.last_activity_ts = time.time()
+                # Wake at whichever deadline comes first so neither can overshoot.
+                until_liveness = liveness - (now - last_line_ts)
+                until_progress = progress_deadline - since_progress
+                wait = max(0.05, min(until_liveness, until_progress))
+
+                if read is None:
+                    read = asyncio.create_task(stdout.readline())
+                if control is None or control.done():
+                    control = asyncio.create_task(state.control_event.wait())
+                waiters: set[asyncio.Task[Any]] = {read, control}
+                done, _pending = await asyncio.wait(
+                    waiters, timeout=wait, return_when=asyncio.FIRST_COMPLETED
+                )
+                if read not in done:
+                    if control in done:
+                        control = None
+                        continue  # an operator acted — re-check the flags at the loop top
+                    # Only treat silence as a wedge once we know this worker DOES send heartbeats —
+                    # otherwise the progress deadline above is the sole authority.
+                    if heartbeat_seen and time.time() - last_line_ts >= liveness:
+                        logger.warning(
+                            "job %s: no worker output for %.0fs despite heartbeats; assuming "
+                            "wedged",
+                            state.id,
+                            liveness,
+                        )
+                        return "stalled"
+                    continue
+                raw = read.result()
+                read = None
+                if not raw:  # EOF
+                    return "eof"
+                last_line_ts = time.time()
+                line = raw.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    logger.warning("job %s: worker emitted non-JSON line: %s", state.id, line[:200])
+                    continue
+                if not isinstance(event, dict) or "type" not in event:
+                    continue
+                etype = event.get("type")
+                if etype == "progress":
+                    continue  # the manager owns job-level progress (monotonic across retries)
+                if etype == "heartbeat":
+                    heartbeat_seen = True
+                    # Liveness only — does NOT reset the progress clock.
+                    await self._emit(state, event)
+                    continue
+                if etype == "prepare":
+                    # Real work: gallery-dl resolved a file. Counts as progress even if no `file`
+                    # event follows (filtered items, or a phase yielding nothing downloadable).
+                    state.last_activity_ts = time.time()
+                    await self._emit(state, event)
+                    continue
+                if etype == "file":
+                    self._record_file(state, event)
+                    await self._emit(state, event)
+                    await self._emit(state, self._job_progress(state))
+                    continue
+                if etype in ("completed", "failed"):
+                    event["downloaded"] = state.downloaded
+                    event["skipped"] = state.skipped
+                    if etype == "failed" and stderr_tail is not None:
+                        # gallery-dl reports *what* failed via its exit-status bitmask but the
+                        # *why* (auth wall, 404, rate limit) only ever reaches stderr. Yield
+                        # briefly first: the drain runs concurrently and may still have buffered.
+                        await asyncio.sleep(_STDERR_SETTLE_SECONDS)
+                        _annotate_failure(event, stderr_tail)
+                    await self._emit(state, event)
+                    return "terminal"
                 await self._emit(state, event)
-                continue
-            if etype == "file":
-                self._record_file(state, event)
-                await self._emit(state, event)
-                await self._emit(state, self._job_progress(state))
-                continue
-            if etype in ("completed", "failed"):
-                event["downloaded"] = state.downloaded
-                event["skipped"] = state.skipped
-                if etype == "failed" and stderr_tail is not None:
-                    # gallery-dl reports *what* failed via its exit-status bitmask but the *why*
-                    # (auth wall, 404, rate limit) only ever reaches stderr. Yield briefly first:
-                    # the drain task runs concurrently and may still have buffered lines.
-                    await asyncio.sleep(_STDERR_SETTLE_SECONDS)
-                    _annotate_failure(event, stderr_tail)
-                await self._emit(state, event)
-                return "terminal"
-            await self._emit(state, event)
+        finally:
+            for task in (read, control):
+                if task is not None:
+                    task.cancel()
+
+    async def _await_resume(
+        self, state: JobState, proc: asyncio.subprocess.Process
+    ) -> float | None:
+        """Park the read loop for the duration of a pause, then continue the worker.
+
+        Returns how long the job was paused, or None if it was cancelled meanwhile.
+
+        This method — not ``pause`` — owns the concurrency slot handoff. Releasing in ``pause``
+        looks equivalent but is not: a resume arriving before the loop had noticed the pause would
+        find the slot already gone and never re-acquire it, so the job would run outside the
+        concurrency limit. Entered whenever a pause is *in effect* (``paused_at`` set), even if the
+        resume already cleared ``pause_requested`` — otherwise that same race would leave the
+        worker SIGSTOPed with nobody left to continue it.
+        """
+        paused_at = state.paused_at or time.time()
+        if state.pause_requested:
+            # The loop has genuinely parked: hand the slot to whoever is waiting for one.
+            self._leave_slot(state)
+            await state.resume_event.wait()
+            state.resume_event.clear()
+            if state.cancel_requested:
+                return None
+        if not state.holds_slot:
+            await self._enter_slot(state)
+        if state.cancel_requested:
+            return None
+        if _SIGCONT is not None:
+            with contextlib.suppress(ProcessLookupError):
+                proc.send_signal(_SIGCONT)
+
+        shift = max(0.0, time.time() - paused_at)
+        state.paused_at = None
+        state.status = JobStatus.RUNNING
+        # Shift first_file_ts AND last_file_ts by the same amount so _stall_threshold's
+        # avg = (last - first)/(n-1) is unchanged; shifting only `last` would inflate it silently.
+        for attr in ("first_file_ts", "last_file_ts", "last_activity_ts"):
+            value = getattr(state, attr)
+            if value is not None:
+                setattr(state, attr, value + shift)
+        await self._emit(
+            state,
+            {
+                "type": "resumed",
+                "job_id": state.id,
+                "paused_for": shift,
+                "downloaded": state.downloaded,
+                "skipped": state.skipped,
+                "ts": time.time(),
+            },
+        )
+        logger.info("job %s resumed after %.0fs", state.id, shift)
+        return shift
 
     def _record_file(self, state: JobState, event: dict[str, Any]) -> None:
         ts = float(event.get("ts") or time.time())
@@ -517,6 +808,12 @@ class JobManager:
         state.last_file_ts = ts
         state.last_activity_ts = ts
         state.file_count += 1
+        if state.profile is None or state.file_count == 1:
+            # gallery-dl's folder is the profile's DISPLAY name, which usually differs from the
+            # URL-derived key we guessed at creation. Prefer the real one for the queue UI.
+            folder = self._profile_folder(event.get("path"))
+            if folder:
+                state.profile = folder
         if event.get("event") == "skipped":
             state.skipped += 1
         else:
@@ -559,6 +856,11 @@ class JobManager:
 
     async def _kill_worker(self, proc: asyncio.subprocess.Process) -> None:
         """SIGTERM, escalate to SIGKILL after the grace period."""
+        # A SIGSTOPed process handles nothing until it is continued — SIGTERM would sit pending and
+        # proc.wait() would never return. Always continue it first when stopping a paused job.
+        if _SIGCONT is not None:
+            with contextlib.suppress(ProcessLookupError, OSError):
+                proc.send_signal(_SIGCONT)
         try:
             proc.terminate()
         except ProcessLookupError:
@@ -623,6 +925,9 @@ class JobManager:
         elif etype == "failed":
             state.status = JobStatus.FAILED
             state.final_summary = event
+        elif etype == "cancelled":
+            state.status = JobStatus.CANCELLED
+            state.final_summary = event
 
         for sub in list(state.subscribers):
             try:
@@ -634,7 +939,8 @@ class JobManager:
     # ------------------------------------------------------------------ gc
 
     async def gc(self) -> int:
-        """Drop terminal jobs older than the max age. Returns the number removed."""
+        """Reap over-long pauses, then drop old terminal jobs. Returns the number removed."""
+        await self._reap_stale_pauses()
         now = time.time()
         cutoff = now - _GC_MAX_AGE_SECONDS
         async with self._lock:
@@ -646,3 +952,30 @@ class JobManager:
             for jid in stale:
                 self._jobs.pop(jid, None)
         return len(stale)
+
+    async def _reap_stale_pauses(self) -> None:
+        """Cancel jobs left paused past ``pause_max_seconds``.
+
+        A paused job is not terminal, so GC never touches it — but it keeps a SIGSTOPed gallery-dl
+        process, its memory, and an open archive SQLite handle alive indefinitely.
+        """
+        limit = self._settings.pause_max_seconds
+        if limit <= 0:  # explicitly disabled
+            return
+        cutoff = time.time() - limit
+        stale = [
+            s.id
+            for s in list(self._jobs.values())
+            if s.pause_requested and s.paused_at is not None and s.paused_at < cutoff
+        ]
+        for job_id in stale:
+            with contextlib.suppress(KeyError, JobControlError):
+                await self.cancel(
+                    job_id,
+                    message=(
+                        f"Stopped automatically after being paused for over "
+                        f"{limit / 3600:.1f}h. Files already downloaded were kept; re-run the "
+                        "profile to continue (archived files are skipped)."
+                    ),
+                )
+            logger.info("job %s auto-cancelled after a long pause", job_id)

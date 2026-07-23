@@ -134,7 +134,11 @@ npm run typecheck && npm run lint
 | POST   | `/api/jobs`                  | Create a download job → `202 {job_id}`   |
 | GET    | `/api/jobs`                  | List jobs                                |
 | GET    | `/api/jobs/{id}`             | Job snapshot                             |
+| GET    | `/api/jobs?active=1`         | Only queued / running / paused jobs      |
 | GET    | `/api/jobs/{id}/events`      | **SSE** progress stream                  |
+| POST   | `/api/jobs/{id}/pause`       | Suspend the worker, free its queue slot  |
+| POST   | `/api/jobs/{id}/resume`      | Continue a paused job                    |
+| POST   | `/api/jobs/{id}/cancel`      | Stop for good, keeping downloaded files  |
 | GET    | `/api/jobs/{id}/zip`         | Download a job's files as a zip          |
 | GET    | `/api/settings`              | `{has_ig, has_fb}` (booleans only)       |
 | PUT    | `/api/settings/cookies`      | Set IG `sessionid` / FB cookies.txt      |
@@ -162,6 +166,25 @@ not in `downloads/`) with image/video counts and file list, rebuilt automaticall
 - **Config**: `DOWNLOADS_DIR` (where media lives — see
   [Storing media on another disk / a NAS](#storing-media-on-another-disk--a-nas)),
   `ZIP_TTL_SECONDS` (default 300), `THUMBNAIL_SIZE` (default 300) — see `.env.example`.
+
+## The Queue tab — pause, resume, stop
+
+`MAX_CONCURRENT_JOBS` (default 2) caps how many downloads run at once, and a large profile can hold
+its slot for hours. **/queue** lists everything downloading, waiting, or paused, so a browser
+refresh never loses track of a running job, and gives each one three controls:
+
+| Action | What happens |
+| --- | --- |
+| **⏸ Pause** | SIGSTOPs the worker — gallery-dl freezes exactly where it is and **keeps its place in the profile walk** — and hands its concurrency slot to the next queued profile, which starts immediately. |
+| **▶ Resume** | Re-acquires a slot (the job shows as `queued` until one frees), then SIGCONTs the worker. It continues from the same photo; no re-enumeration. |
+| **⏹ Stop** | Terminal, but **not** a failure: files already downloaded are kept and that profile's `metadata.json` is reconciled at once, so `/profiles` shows the partial download. Re-running skips them and continues. |
+
+Paused time never counts toward the stall deadlines below. Two caveats: a very long pause can let
+the platform drop the in-flight HTTPS connection (gallery-dl retries, and a run that does die is
+resumable from the archive), and a job left paused past `PAUSE_MAX_SECONDS` (default 2 h, `0`
+disables) is stopped automatically rather than keeping a suspended process around forever.
+
+Job state is in memory: restarting the backend clears the queue and stops anything in flight.
 
 ## Rate limits and long-running jobs
 

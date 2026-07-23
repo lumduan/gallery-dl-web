@@ -23,17 +23,22 @@ Both sides must honor it; the TS mirror lives in `frontend/src/lib/events.ts`.
 | `heartbeat` | Worker liveness while gallery-dl is silent (non-terminal) | `beat`, `elapsed`                    |
 | `stalled`   | No **file** event within the progress deadline (non-terminal) | `attempt`, `threshold`, `phase` (`warmup` \| `download`), `since_last_file`? |
 | `retrying`  | The stalled/exit worker was killed and a fresh one will spawn (non-terminal) | `attempt`, `reason` (`stalled` \| `worker-exited`) |
+| `paused`    | Operator paused the job; worker SIGSTOPed (non-terminal) | `downloaded`, `skipped`                |
+| `resumed`   | Operator resumed it; worker SIGCONTed after re-acquiring a slot (non-terminal) | `paused_for`, `downloaded`, `skipped` |
 | `error`     | A recoverable or fatal error                  | `message`, `kind`, `fatal` (bool)                       |
 | `completed` | **Terminal.** Worker exited status 0          | `exit_status`, `downloaded`, `skipped`, `reason`        |
 | `failed`    | **Terminal.** Worker exited non-zero, or retries exhausted (`reason`: `stalled` \| `no-progress` \| `rate-limited` \| `worker-crash` \| `missing-cookies` \| `downloads-dir-unwritable` \| a gallery-dl reason such as `dl-failed`) | `exit_status`, `reason`, `message`?, `resume_url`? |
+| `cancelled` | **Terminal.** Operator stopped the job (`reason`: `cancelled`) | `reason`, `message`, `downloaded`, `skipped` |
 | `ping`      | sse-starlette keepalive (15 s)                | `{}`                                                    |
 | `end`       | Synthetic terminal sentinel from the SSE route | `{ "terminal": true }`                                |
 
 ## Rules
 
-1. **Exactly one terminal event** (`completed` or `failed`) is always emitted last. `stalled`,
-   `retrying` and `heartbeat` are **non-terminal** — the manager emits them around a kill+respawn
-   (or continuously), then the final `completed`/`failed`.
+1. **Exactly one terminal event** (`completed`, `failed`, or `cancelled`) is always emitted last.
+   `stalled`, `retrying`, `heartbeat`, `paused` and `resumed` are **non-terminal** — the manager
+   emits them around a kill+respawn, a pause, or continuously, then the single terminal event.
+   `cancelled` is terminal but is **not** a failure: it means the operator stopped the job, the
+   files already fetched were kept, and the UI must not present it as an error.
 2. `progress` is **manager-emitted** (job-level, monotonic across retries), after each `file` event;
    the worker's own per-attempt `progress` events are dropped.
 3. All events carry `ts` (unix float) and `job_id` (except `ping`/`end`).
@@ -60,6 +65,12 @@ Both sides must honor it; the TS mirror lives in `frontend/src/lib/events.ts`.
     `gallerydl/errors.py:detect_rate_limit`, and it overrides the reason on both the worker's own
     terminal event and a manager-synthesized stall. When the platform supplies a resume point
     (gallery-dl's `&setextract` URL for a Facebook set) it is passed through as `resume_url`.
+11. **Pause is a real process suspension**, driven by `POST /api/jobs/{id}/pause`. The manager
+    SIGSTOPs the worker, so gallery-dl keeps its place in the profile walk and no `heartbeat`
+    arrives until it resumes. The concurrency slot is handed back — that is the point, a waiting
+    profile starts immediately — and re-acquired on resume, so a resumed job can legitimately sit
+    at `queued` (with `started_at` already set) before its `resumed` event. Paused wall-time is
+    subtracted from every stall clock, so a pause can never be reported as a stall.
 
 ## Example stream
 
