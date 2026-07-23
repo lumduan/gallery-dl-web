@@ -12,7 +12,7 @@ flowchart TD
     P2 --> P4["4 · Integrate and ship<br/>DONE — v0.1.0"]
     P3 --> P4
     D1["D1 · Operator gets cookies<br/>DONE"] --> P4
-    P4 --> P5["5 · Queue control<br/>pause / resume / stop<br/>DONE"]
+    P4 --> P5["5 · Queue control<br/>pause / resume / stop<br/>DONE — v0.2.0"]
 
     classDef done     fill:#d4f4dd,stroke:#2d8a4e,color:#1a5c33
     classDef active   fill:#fff3cd,stroke:#cc9a06,color:#7a5c04
@@ -32,13 +32,13 @@ flowchart TD
 | **2 · Backend crux** | ✅ DONE | gallery-dl subprocess worker (STDIN config → JSON-lines hooks), asyncio `JobManager` (fan-out + history replay), SSE route, cookie store, settings/files/health routes; ruff/mypy clean, pytest **89.8%** coverage | — |
 | **3 · Frontend** | ✅ DONE | Next.js pages: `/` (URL input + platform detect), `/jobs/[id]` (SSE progress + zip), `/settings` (cookies), `/downloads`; `EventSource` consumer; catch-all `/api/*` proxy route. typecheck + lint + build green | — |
 | **4 · Integrate and ship** | ✅ DONE | `docker-compose` (dev + prod + host-dir overlay); ghcr publish workflow; **live E2E verified** (real cookies, 1423 files across 3 profiles); **`v0.1.0` tagged 2026-07-23** → first ghcr publish | — |
-| **5 · Queue control** | ✅ DONE | `/queue` tab listing active + recent jobs; per-job **pause (SIGSTOP + slot release) / resume (SIGCONT) / stop (terminal `cancelled`)**; stop reconciles the profile's `metadata.json` | — |
+| **5 · Queue control** | ✅ DONE | `/queue` tab listing active + recent jobs; per-job **pause (SIGSTOP + slot release) / resume (SIGCONT) / stop (terminal `cancelled`)**; stop reconciles the profile's `metadata.json`; **`v0.2.0` tagged 2026-07-23** | — |
 | **D1 · Operator cookies** | ✅ DONE | Real IG `sessionid` + FB cookies in use; live downloads confirmed 2026-07-23 | — |
 
-> **All phases are complete and `v0.1.0` is released.** Live E2E passes against real Instagram and
-> Facebook profiles, and both images publish to ghcr on tag. Note that Facebook rate-limits an
-> account after a few hundred images in one run ("temporarily blocked from viewing images"); that
-> is a platform limit, not a defect, and the job now reports it verbatim.
+> **All phases are complete; the current release is `v0.2.0`** (`v0.1.0` shipped phase 4). Live E2E
+> passes against real Instagram and Facebook profiles, and both images publish to ghcr on tag. Note
+> that Facebook rate-limits an account after a few hundred images in one run ("temporarily blocked
+> from viewing images"); that is a platform limit, not a defect, and the job now reports it verbatim.
 >
 > Next up is post-v0.1 work rather than a blocker: multi-account cookie storage, and resuming a
 > blocked Facebook run from gallery-dl's `&setextract` URL. (Job cancellation from the UI shipped
@@ -101,6 +101,8 @@ at `queued` with no explanation, and a browser refresh lost the only link to a r
 - [x] `PAUSE_MAX_SECONDS` (default 2 h) auto-stops a job left paused, so a suspended worker can't
       be leaked
 - [x] 19 new backend tests (150 total, 90% coverage); frontend lint + typecheck + build green
+- [x] tag `v0.2.0` (2026-07-23) → ghcr publish of
+      `ghcr.io/lumduan/gallery-dl-web-{backend,frontend}:{latest,v0.2.0}`
 
 ### D1 · Operator cookies — ✅ DONE
 - **Primary (new): browser extension** — load `extension/` unpacked, set the server URL, click
