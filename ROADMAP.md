@@ -9,7 +9,7 @@ images with live SSE progress. See [the event contract](docs/event-contract.md) 
 flowchart TD
     P1["1 · Foundation<br/>DONE"] --> P2["2 · Backend crux<br/>DONE"]
     P1 --> P3["3 · Frontend<br/>DONE"]
-    P2 --> P4["4 · Integrate and ship<br/>ACTIVE"]
+    P2 --> P4["4 · Integrate and ship<br/>DONE — v0.1.0"]
     P3 --> P4
     D1["D1 · Operator gets cookies<br/>DONE"] --> P4
 
@@ -20,7 +20,7 @@ flowchart TD
     class P1 done
     class P2 done
     class P3 done
-    class P4 active
+    class P4 done
     class D1 done
 ```
 
@@ -29,13 +29,16 @@ flowchart TD
 | **1 · Foundation** | ✅ DONE | Public repo `lumduan/gallery-dl-web`; monorepo scaffold (backend from `python-template` + Next.js); both Dockerfiles; `.gitignore`/LICENSE/README; pinned SSE event contract (`docs/event-contract.md`) | — |
 | **2 · Backend crux** | ✅ DONE | gallery-dl subprocess worker (STDIN config → JSON-lines hooks), asyncio `JobManager` (fan-out + history replay), SSE route, cookie store, settings/files/health routes; ruff/mypy clean, pytest **89.8%** coverage | — |
 | **3 · Frontend** | ✅ DONE | Next.js pages: `/` (URL input + platform detect), `/jobs/[id]` (SSE progress + zip), `/settings` (cookies), `/downloads`; `EventSource` consumer; catch-all `/api/*` proxy route. typecheck + lint + build green | — |
-| **4 · Integrate and ship** | 🟡 ACTIVE | `docker-compose` (dev + prod + host-dir overlay); ghcr publish workflow; **live E2E verified** (real cookies, 1423 files across 3 profiles); first release tag outstanding | none — just tagging |
+| **4 · Integrate and ship** | ✅ DONE | `docker-compose` (dev + prod + host-dir overlay); ghcr publish workflow; **live E2E verified** (real cookies, 1423 files across 3 profiles); **`v0.1.0` tagged 2026-07-23** → first ghcr publish | — |
 | **D1 · Operator cookies** | ✅ DONE | Real IG `sessionid` + FB cookies in use; live downloads confirmed 2026-07-23 | — |
 
-> **P1–P3 are done and D1 is closed — live E2E now passes against real Instagram and Facebook
-> profiles.** The only thing left in P4 is tagging `v0.1.0`. Note that Facebook rate-limits an
+> **All phases are complete and `v0.1.0` is released.** Live E2E passes against real Instagram and
+> Facebook profiles, and both images publish to ghcr on tag. Note that Facebook rate-limits an
 > account after a few hundred images in one run ("temporarily blocked from viewing images"); that
 > is a platform limit, not a defect, and the job now reports it verbatim.
+>
+> Next up is post-v0.1 work rather than a blocker: multi-account cookie storage, job cancellation
+> from the UI, and resuming a blocked Facebook run from gallery-dl's `&setextract` URL.
 
 ---
 
@@ -65,7 +68,7 @@ independently.
   per-file counts; surfaces a clear "missing-cookies → Settings" message.
 - Cookie forms never display stored values (booleans only).
 
-### 4 · Integrate and ship — 🟡 ACTIVE
+### 4 · Integrate and ship — ✅ DONE
 - [x] `docker-compose.yml` (prod, builds from source) + `docker-compose.dev.yml` (hot-reload overlay)
 - [x] GitHub Actions: `ci.yml` (backend + frontend quality), `docker-publish.yml` (ghcr on tag),
       `security.yml` (weekly bandit + pip-audit)
@@ -77,7 +80,8 @@ independently.
 - [x] Stall detection reworked into two independent deadlines (liveness vs progress) after the
       original 90 s single deadline was found killing healthy jobs mid-enumeration
 - [x] live download E2E with **real** cookies — 1423 files / 0.84 GB across 3 profiles
-- [ ] tag `v0.1.0` → first ghcr image publish (operator decision)
+- [x] tag `v0.1.0` (2026-07-23) → first ghcr publish of
+      `ghcr.io/lumduan/gallery-dl-web-{backend,frontend}:{latest,v0.1.0}`
 
 ### D1 · Operator cookies — ✅ DONE
 - **Primary (new): browser extension** — load `extension/` unpacked, set the server URL, click
