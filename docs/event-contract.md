@@ -25,7 +25,7 @@ Both sides must honor it; the TS mirror lives in `frontend/src/lib/events.ts`.
 | `retrying`  | The stalled/exit worker was killed and a fresh one will spawn (non-terminal) | `attempt`, `reason` (`stalled` \| `worker-exited`) |
 | `error`     | A recoverable or fatal error                  | `message`, `kind`, `fatal` (bool)                       |
 | `completed` | **Terminal.** Worker exited status 0          | `exit_status`, `downloaded`, `skipped`, `reason`        |
-| `failed`    | **Terminal.** Worker exited non-zero, or retries exhausted (`reason`: `stalled` \| `no-progress` \| `worker-crash` \| `missing-cookies` \| `downloads-dir-unwritable`) | `exit_status`, `reason`, `message`? |
+| `failed`    | **Terminal.** Worker exited non-zero, or retries exhausted (`reason`: `stalled` \| `no-progress` \| `rate-limited` \| `worker-crash` \| `missing-cookies` \| `downloads-dir-unwritable` \| a gallery-dl reason such as `dl-failed`) | `exit_status`, `reason`, `message`?, `resume_url`? |
 | `ping`      | sse-starlette keepalive (15 s)                | `{}`                                                    |
 | `end`       | Synthetic terminal sentinel from the SSE route | `{ "terminal": true }`                                |
 
@@ -53,7 +53,13 @@ Both sides must honor it; the TS mirror lives in `frontend/src/lib/events.ts`.
    retry budget: with zero files fetched the archive has nothing to resume, so a retry just repeats
    the same slow enumeration.
 9. `failed.message` carries the tail of the worker's stderr when there is one — that is where
-   gallery-dl's real error text (auth wall, permission denied, rate limit) appears.
+   gallery-dl's real error text (auth wall, permission denied) appears.
+10. A platform rate limit is promoted to `reason: rate-limited` with a plain-language `message`
+    instead of the raw traceback: it is not an application error, and the only useful action is to
+    wait — retrying extends the block. Detected from stderr by
+    `gallerydl/errors.py:detect_rate_limit`, and it overrides the reason on both the worker's own
+    terminal event and a manager-synthesized stall. When the platform supplies a resume point
+    (gallery-dl's `&setextract` URL for a Facebook set) it is passed through as `resume_url`.
 
 ## Example stream
 

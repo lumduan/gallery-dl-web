@@ -29,6 +29,8 @@ export interface JobEvent {
   kind?: string;
   fatal?: boolean;
   reason?: string;
+  /** failed/rate-limited only: a URL the platform gave to resume from (gallery-dl's &setextract). */
+  resume_url?: string;
   exit_status?: number;
   attempt?: number;
   threshold?: number;

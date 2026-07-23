@@ -35,7 +35,9 @@ function describe(ev: JobEvent): string {
     case "completed":
       return `Completed — ${ev.downloaded ?? 0} file(s)`;
     case "failed":
-      return `Failed — ${ev.reason ?? "unknown"}`;
+      return ev.reason === "rate-limited"
+        ? "⏸ Stopped — the platform rate-limited this account"
+        : `Failed — ${ev.reason ?? "unknown"}`;
     default:
       return ev.type;
   }
@@ -146,8 +148,10 @@ export function JobProgress({ jobId }: { jobId: string }) {
   const terminal = status === "completed" || status === "failed";
   // Prefer the live terminal event; fall back to the summary fetched at mount (page reload case).
   const finalReason = (terminalEvent ??
-    (summary?.final_summary as { reason?: string; message?: string } | undefined)) as
-    | { reason?: string; message?: string }
+    (summary?.final_summary as
+      | { reason?: string; message?: string; resume_url?: string }
+      | undefined)) as
+    | { reason?: string; message?: string; resume_url?: string }
     | undefined;
 
   return (
@@ -190,7 +194,13 @@ export function JobProgress({ jobId }: { jobId: string }) {
             </a>
           )}
           {terminal && status === "failed" && finalReason && (
-            <div className="alert alert-error flex-col items-start gap-1 py-2 text-sm">
+            <div
+              className={`alert flex-col items-start gap-1 py-2 text-sm ${
+                // A rate limit is the platform pausing us, not a failure of the app — don't
+                // shout at the user in red for something they can only wait out.
+                finalReason.reason === "rate-limited" ? "alert-warning" : "alert-error"
+              }`}
+            >
               {finalReason.reason === "missing-cookies" ? (
                 <>
                   No cookies configured for this platform.{" "}
@@ -198,6 +208,22 @@ export function JobProgress({ jobId }: { jobId: string }) {
                     Add them in Settings
                   </a>
                   .
+                </>
+              ) : finalReason.reason === "rate-limited" ? (
+                <>
+                  <span className="font-semibold">⏸ Paused by the platform, not an error.</span>
+                  <span>{String(finalReason.message ?? "")}</span>
+                  {counts.downloaded + counts.skipped > 0 && (
+                    <span className="opacity-80">
+                      {counts.downloaded} file(s) downloaded before the block were saved — a later
+                      re-run skips them and continues.
+                    </span>
+                  )}
+                  {finalReason.resume_url && (
+                    <span className="break-all font-mono text-xs opacity-80">
+                      Resume point: {finalReason.resume_url}
+                    </span>
+                  )}
                 </>
               ) : finalReason.reason === "downloads-dir-unwritable" ? (
                 <>

@@ -7,6 +7,7 @@ import json
 from gallery_dl_web.config import Settings
 from gallery_dl_web.jobs import manager as mgr_mod
 from gallery_dl_web.jobs.models import JobState, JobStatus
+from tests.conftest import FB_NETSCAPE
 
 
 def _ev(d: dict) -> str:
@@ -145,6 +146,60 @@ async def test_stderr_is_drained_and_surfaced_on_failure(
     assert state.final_summary is not None
     assert "worker output:" in state.final_summary["message"]
     assert "something went wrong" in state.final_summary["message"]
+
+
+async def test_rate_limit_overrides_the_gallerydl_reason(
+    job_manager, cookie_store, fake_spawn, monkeypatch
+) -> None:
+    """A platform block must read as `rate-limited`, not a bare dl-failed + traceback."""
+    cookie_store.update(fb_cookies_text=FB_NETSCAPE)
+    lines = [
+        _ev({"type": "started", "url": "u"}),
+        _ev({"type": "failed", "exit_status": 4, "reason": "dl-failed"}),
+    ]
+    stderr = [
+        "Traceback (most recent call last):\n",
+        "gallery_dl.exception.AbortExtraction: You've been temporarily blocked from viewing"
+        " images.\n",
+        "https://www.facebook.com/photo/?fbid=1&set=a.2&setextract\n",
+    ]
+    monkeypatch.setattr(mgr_mod, "spawn_worker", fake_spawn(lines, stderr_lines=stderr))
+
+    jid = await job_manager.create_job("https://facebook.com/someone", "facebook")
+    await job_manager.wait_for(jid)
+    state = job_manager.get(jid)
+    assert state is not None
+    fs = state.final_summary
+    assert fs is not None
+    assert fs["reason"] == "rate-limited"  # promoted from dl-failed
+    assert "Traceback" not in fs["message"]  # plain language, not a stack trace
+    assert fs["resume_url"].endswith("&setextract")
+    assert fs["exit_status"] == 4  # gallery-dl's own status is preserved
+
+
+async def test_ordinary_failure_keeps_reason_and_gets_stderr_tail(
+    job_manager, cookie_store, fake_spawn, monkeypatch
+) -> None:
+    cookie_store.update(ig_sessionid="SID")
+    lines = [
+        _ev({"type": "started", "url": "u"}),
+        _ev({"type": "failed", "exit_status": 4, "reason": "dl-failed"}),
+    ]
+    monkeypatch.setattr(
+        mgr_mod,
+        "spawn_worker",
+        fake_spawn(lines, stderr_lines=["error:instagram:HttpError: '404 Not Found'\n"]),
+    )
+
+    jid = await job_manager.create_job("https://instagram.com/x/", "instagram")
+    await job_manager.wait_for(jid)
+    state = job_manager.get(jid)
+    assert state is not None
+    fs = state.final_summary
+    assert fs is not None
+    assert fs["reason"] == "dl-failed"  # unchanged
+    assert "404 Not Found" in fs["message"]  # raw tail still surfaced
+    assert "resume_url" not in fs
 
 
 async def test_unwritable_downloads_dir_fails_fast(

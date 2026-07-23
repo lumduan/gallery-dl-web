@@ -27,6 +27,7 @@ from typing import Any
 
 from gallery_dl_web.config import Settings
 from gallery_dl_web.cookies.store import CookieStore
+from gallery_dl_web.gallerydl.errors import detect_rate_limit
 from gallery_dl_web.jobs.models import JobState, JobStatus
 from gallery_dl_web.jobs.worker_runner import spawn_worker
 from gallery_dl_web.profiles.store import ProfileStore
@@ -62,6 +63,27 @@ def _tail_text(lines: deque[str]) -> str:
     if len(text) > _STDERR_TAIL_CHARS:
         text = "…" + text[-_STDERR_TAIL_CHARS:]
     return f"worker output:\n{text}"
+
+
+def _annotate_failure(event: dict[str, Any], stderr_tail: deque[str]) -> None:
+    """Enrich a terminal ``failed`` event from the worker's stderr, in place.
+
+    A platform rate limit is promoted to its own ``reason`` with a plain-language message: it is
+    not an application error, the operator's only useful action is to wait, and retrying makes it
+    worse. Everything else keeps its gallery-dl reason and gets the raw tail appended, which is
+    where the real cause (auth wall, permission denied, 404) shows up.
+    """
+    limit = detect_rate_limit(stderr_tail)
+    if limit is not None:
+        event["reason"] = "rate-limited"
+        event["message"] = limit.message
+        if limit.resume_url:
+            event["resume_url"] = limit.resume_url
+        return
+    tail = _tail_text(stderr_tail)
+    if tail:
+        existing = str(event.get("message") or "").strip()
+        event["message"] = f"{existing}\n{tail}" if existing else tail
 
 
 class JobManager:
@@ -333,20 +355,20 @@ class JobManager:
             # Retries exhausted -> terminal failure. Surface the worker's stderr tail: it usually
             # carries gallery-dl's real error (auth wall, permission denied, rate limit).
             reason, message = self._failure_reason(stalled, warmup)
-            tail = _tail_text(stderr_tail)
-            await self._emit(
-                state,
-                {
-                    "type": "failed",
-                    "job_id": state.id,
-                    "exit_status": 0,
-                    "reason": reason,
-                    "message": f"{message}\n{tail}" if tail else message,
-                    "downloaded": state.downloaded,
-                    "skipped": state.skipped,
-                    "ts": time.time(),
-                },
-            )
+            event: dict[str, Any] = {
+                "type": "failed",
+                "job_id": state.id,
+                "exit_status": 0,
+                "reason": reason,
+                "message": message,
+                "downloaded": state.downloaded,
+                "skipped": state.skipped,
+                "ts": time.time(),
+            }
+            # A job that ran out of progress *because* the platform blocked it should say so
+            # rather than blaming the stall detector.
+            _annotate_failure(event, stderr_tail)
+            await self._emit(state, event)
             return
 
     @staticmethod
@@ -480,14 +502,10 @@ class JobManager:
                 event["skipped"] = state.skipped
                 if etype == "failed" and stderr_tail is not None:
                     # gallery-dl reports *what* failed via its exit-status bitmask but the *why*
-                    # (auth wall, 404, rate limit) only ever reaches stderr. Attach it or the UI
-                    # shows a bare "dl-failed". Yield briefly first: the drain task runs
-                    # concurrently and may still have buffered lines to consume.
+                    # (auth wall, 404, rate limit) only ever reaches stderr. Yield briefly first:
+                    # the drain task runs concurrently and may still have buffered lines.
                     await asyncio.sleep(_STDERR_SETTLE_SECONDS)
-                    tail = _tail_text(stderr_tail)
-                    if tail:
-                        existing = str(event.get("message") or "").strip()
-                        event["message"] = f"{existing}\n{tail}" if existing else tail
+                    _annotate_failure(event, stderr_tail)
                 await self._emit(state, event)
                 return "terminal"
             await self._emit(state, event)
