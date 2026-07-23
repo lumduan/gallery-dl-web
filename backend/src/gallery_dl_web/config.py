@@ -44,6 +44,31 @@ class Settings(BaseSettings):
     zip_ttl_seconds: int = 300  # how long a generated profile .zip lives after last access
     thumbnail_size: int = 300  # longest-side px for generated thumbnails
 
+    # Per-request pacing -> gallery-dl `sleep-request` (a [min, max] range it samples per request).
+    # Both platforms rate-limit scraping. Facebook is the harsher one: with no delay it blocked an
+    # account after ~767 images in a single run ("You've been temporarily blocked from viewing
+    # images"), so it is paced too — less aggressively than Instagram, since Facebook needs a page
+    # request per photo and the delay compounds. Raise these if you get blocked; a block costs far
+    # more time than the delay does.
+    instagram_sleep_request_min: float = 6.0
+    instagram_sleep_request_max: float = 12.0
+    facebook_sleep_request_min: float = 3.0
+    facebook_sleep_request_max: float = 8.0
+
+    def sleep_request_for(self, platform: str) -> list[float] | None:
+        """The [min, max] sleep-request range for a platform, or None if unknown/disabled."""
+        pairs = {
+            "instagram": (self.instagram_sleep_request_min, self.instagram_sleep_request_max),
+            "facebook": (self.facebook_sleep_request_min, self.facebook_sleep_request_max),
+        }
+        pair = pairs.get(platform)
+        if pair is None:
+            return None
+        lo, hi = max(0.0, pair[0]), max(0.0, pair[1])
+        if hi <= 0:
+            return None  # explicitly disabled
+        return [lo, max(lo, hi)]
+
     # Stall detection + retry. Two independent deadlines (see jobs/manager.py):
     #   * LIVENESS  — no line at all on worker stdout (not even a heartbeat) => the process is
     #     wedged (blocked pipe, deadlock). Short.

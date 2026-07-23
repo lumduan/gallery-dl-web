@@ -40,6 +40,11 @@ _IG_DEFAULTS: dict[str, Any] = {
 _FB_DEFAULTS: dict[str, Any] = {
     "include": "photos,albums",
     "videos": "ytdl",
+    # Facebook blocks an account that fetches images back-to-back ("You've been temporarily blocked
+    # from viewing images" after ~767 in one run). Lower than Instagram's range because Facebook
+    # issues a page request per photo, so the delay compounds. The manager overrides this from
+    # Settings; this default keeps direct worker invocations paced too.
+    "sleep-request": [3.0, 8.0],
     "directory": ["facebook", "{username}"],
     "filename": "{id}.{extension}",
 }

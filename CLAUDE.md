@@ -117,6 +117,11 @@ That is why `archive_path` is stored in `metadata.json` — deletion needs it.
 **Every filesystem path from a request goes through `api/paths.py:resolve_within`.** It is the single
 traversal guard for `/api/files`, profile files, thumbnails, and zips.
 
+**Both platforms are rate-limited and both are paced** via gallery-dl's `sleep-request`
+(`<PLATFORM>_SLEEP_REQUEST_MIN/MAX`, injected into the job payload by `_build_payload`, overridable
+per-job through the API's `options`). Facebook blocked an account after ~767 images fetched with no
+delay. Raise the values after a block; a block costs far more time than the delay. `MAX=0` disables.
+
 **Adding a `Settings` field means touching four places**: `config.py`, `.env.example`, and the
 `environment:` block of *both* compose files (env vars are uppercase field names).
 

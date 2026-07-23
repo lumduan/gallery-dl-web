@@ -54,6 +54,20 @@ def test_instagram_defaults() -> None:
     assert d[(("extractor", "instagram"), "videos")] is True
 
 
+def test_facebook_is_paced() -> None:
+    """Facebook blocks an unpaced account ("temporarily blocked from viewing images")."""
+    fake = FakeConfig()
+    config_builder.apply(_fb(), fake)
+    lo, hi = fake.as_dict()[(("extractor", "facebook"), "sleep-request")]
+    assert 0 < lo <= hi
+
+
+def test_sleep_request_is_overridable_per_job() -> None:
+    fake = FakeConfig()
+    config_builder.apply(_fb(options={"sleep-request": [30.0, 45.0]}), fake)
+    assert fake.as_dict()[(("extractor", "facebook"), "sleep-request")] == [30.0, 45.0]
+
+
 def test_options_override_defaults() -> None:
     fake = FakeConfig()
     config_builder.apply(_ig(options={"include": "posts", "filename": "x.{extension}"}), fake)

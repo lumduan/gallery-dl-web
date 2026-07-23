@@ -564,6 +564,11 @@ class JobManager:
         cookies: dict[str, Any] | str,
     ) -> dict[str, Any]:
         merged = dict(options)
+        # Per-request pacing from Settings so it can be tuned by env var after a rate-limit block,
+        # without a rebuild. An explicit per-job option still wins.
+        sleep_request = self._settings.sleep_request_for(state.platform)
+        if sleep_request is not None:
+            merged.setdefault("sleep-request", sleep_request)
         archive_dir = self._settings.data_dir / "archive"
         # Per-profile archive (so a profile can be deleted + re-downloaded cleanly). Falls back to
         # the shared per-platform archive when the URL exposes no username.
