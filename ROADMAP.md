@@ -28,7 +28,7 @@ flowchart TD
 |---|---|---|---|
 | **1 · Foundation** | ✅ DONE | Public repo `lumduan/gallery-dl-web`; monorepo scaffold (backend from `python-template` + Next.js); both Dockerfiles; `.gitignore`/LICENSE/README; pinned SSE event contract (`docs/event-contract.md`) | — |
 | **2 · Backend crux** | ✅ DONE | gallery-dl subprocess worker (STDIN config → JSON-lines hooks), asyncio `JobManager` (fan-out + history replay), SSE route, cookie store, settings/files/health routes; ruff/mypy clean, pytest **89.8%** coverage | — |
-| **3 · Frontend** | ✅ DONE | Next.js pages: `/` (URL input + platform detect), `/jobs/[id]` (SSE progress + zip), `/settings` (cookies), `/downloads`; `EventSource` consumer; `next.config` rewrite. typecheck + lint + build green | — |
+| **3 · Frontend** | ✅ DONE | Next.js pages: `/` (URL input + platform detect), `/jobs/[id]` (SSE progress + zip), `/settings` (cookies), `/downloads`; `EventSource` consumer; catch-all `/api/*` proxy route. typecheck + lint + build green | — |
 | **4 · Integrate and ship** | 🟡 ACTIVE | `docker-compose` (dev + prod + host-dir overlay); ghcr publish workflow; **live E2E verified** (real cookies, 1423 files across 3 profiles); first release tag outstanding | none — just tagging |
 | **D1 · Operator cookies** | ✅ DONE | Real IG `sessionid` + FB cookies in use; live downloads confirmed 2026-07-23 | — |
 
@@ -58,7 +58,9 @@ independently.
   worker-subprocess integration test).
 
 ### 3 · Frontend — ✅ DONE
-- `next.config.ts` rewrites `/api/*` + `/health` → backend (CORS still configured for direct use).
+- `src/app/api/[...path]/route.ts` proxies `/api/*` → backend, reading `BACKEND_URL` at **request**
+  time (not `next.config` rewrites, which bake the destination in at build time). CORS is still
+  configured for direct backend use.
 - `JobProgress.tsx` consumes the SSE stream with typed listeners; renders a live activity log and
   per-file counts; surfaces a clear "missing-cookies → Settings" message.
 - Cookie forms never display stored values (booleans only).

@@ -1,5 +1,6 @@
-// Typed wrappers for the backend JSON API. All paths are relative ("/api/..."); Next.js rewrites
-// them to the FastAPI backend (see next.config.ts).
+// Typed wrappers for the backend JSON API. All paths are relative ("/api/..."); the catch-all
+// route handler in src/app/api/[...path]/route.ts proxies them to the FastAPI backend, reading
+// BACKEND_URL at request time (deliberately NOT next.config rewrites — those bake in at build).
 
 export interface JobSummary {
   id: string;

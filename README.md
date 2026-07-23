@@ -13,12 +13,13 @@ Browser ──► Next.js :3000 ──(proxy /api/*)──► FastAPI :8000
                                                   │ spawn subprocess, send config over STDIN
                                                   ▼
                           `python -m gallery_dl_web.gallerydl.worker`
-                            ├─ gallery_dl.config.set(...)   (cookies, dir, templates)
+                            ├─ gallery_dl.config.set(...)   (cookies, dir, templates, pacing)
                             ├─ DownloadJob(url).run() + hooks (file/skip/error)
-                            └─ emits one JSON-line event per file → SSE fan-out
+                            ├─ emits one JSON-line event per file → SSE fan-out
+                            └─ heartbeats while gallery-dl is quiet (it enumerates for minutes)
                                                   │
-                          files land in /data/downloads (named volume)
-                          gallery-dl SQLite archive → re-run de-dup
+                          media → DOWNLOADS_DIR (default /data/downloads, a named volume)
+                          gallery-dl SQLite archive → re-run de-dup / resume
 ```
 
 ## Why a subprocess per job?
@@ -55,15 +56,40 @@ are never returned over the API.
 ### 2. Run it
 
 ```bash
-# Dev (hot reload on both services; needs Docker)
 cp .env.example .env
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up
 
-# Prod (prebuilt ghcr images)
+# Prod
 docker compose up -d
+
+# Dev (hot reload on both services) — the dev file is STANDALONE, not an overlay on the prod one
+docker compose -f docker-compose.dev.yml up
 ```
 
+> Don't merge the two compose files. `docker-compose.dev.yml` replaces the prod definition rather
+> than extending it; combining them pairs the prod `build: ./frontend` with the dev
+> `image: node:24-alpine`, so Docker builds the production frontend and tags it as your local Node
+> base image.
+
 Open <http://localhost:3000>, paste a public IG/FB URL, and watch it download.
+
+### Storing media on another disk / a NAS
+
+By default everything lives in the `gallery-data` named volume. To put media somewhere else, set
+`DOWNLOADS_DIR` **and** enable the bind-mount overlay — the variable alone does nothing, because
+the path also has to exist inside the container:
+
+```bash
+# .env
+DOWNLOADS_DIR=/mnt/downloads/gallery
+COMPOSE_FILE=docker-compose.yml:docker-compose.hostdir.yml
+```
+
+Compose reads `COMPOSE_FILE` automatically, so `docker compose up -d` still works unchanged. The
+directory (and everything under it) must be writable by **UID 1001**, the non-root app user. If you
+seed it with existing media, copy it as UID 1001 — copying as root onto an NFS export with
+`root_squash` lands the tree as `nobody:nogroup` mode 0755, which reads fine but silently fails
+every download. The backend refuses to start a job when it detects this
+(`reason: downloads-dir-unwritable`).
 
 ## Project layout
 
@@ -76,7 +102,8 @@ gallery-dl-web/
 ├── extension/        # Manifest V3 browser extension — sends your IG/FB cookies to Settings
 ├── docs/event-contract.md   # the SSE JSON schema (pinned, shared by both services)
 ├── docker-compose.yml       # prod
-└── docker-compose.dev.yml   # dev overlay
+├── docker-compose.dev.yml   # dev (standalone — do NOT merge with the prod file)
+└── docker-compose.hostdir.yml  # optional: bind-mount a host/NAS dir for media
 ```
 
 ## Development
@@ -87,7 +114,8 @@ gallery-dl-web/
 uv sync --all-groups
 uv run python -m gallery_dl_web     # serves API on :8000
 uv run pytest                       # tests + ≥80% coverage gate
-uv run ruff check . && uv run mypy src
+uv run pytest tests/jobs -q --no-cov   # a subset — --no-cov skips the coverage gate
+uv run ruff check . && uv run ruff format --check . && uv run mypy src
 ```
 
 **Frontend** (`frontend/`):
@@ -131,8 +159,28 @@ not in `downloads/`) with image/video counts and file list, rebuilt automaticall
   card for a thumbnail grid (Pillow thumbnails, generated on demand). Click a thumbnail for the full
   image; **Download .zip** builds `<name>.zip` (auto-deleted `ZIP_TTL_SECONDS` after last access);
   **Delete profile** removes files + per-profile archive + metadata to free storage.
-- **Config**: `DOWNLOADS_DIR` (where media lives), `ZIP_TTL_SECONDS` (default 300),
-  `THUMBNAIL_SIZE` (default 300) — see `.env.example`.
+- **Config**: `DOWNLOADS_DIR` (where media lives — see
+  [Storing media on another disk / a NAS](#storing-media-on-another-disk--a-nas)),
+  `ZIP_TTL_SECONDS` (default 300), `THUMBNAIL_SIZE` (default 300) — see `.env.example`.
+
+## Rate limits and long-running jobs
+
+Both platforms throttle scraping, so requests are paced via gallery-dl's `sleep-request`:
+Instagram 6–12 s, Facebook 3–8 s (`INSTAGRAM_`/`FACEBOOK_SLEEP_REQUEST_MIN`/`MAX`). Facebook is the
+harsher one — with no delay it blocked an account after ~767 images in a single run. **If you get
+blocked, raise those values and wait before retrying**; a block costs far more time than the delay.
+Set `MAX=0` to disable pacing.
+
+A job is guarded by two independent deadlines, because pacing makes silence normal:
+
+- **liveness** — the worker emits a `heartbeat` every `HEARTBEAT_SECONDS`; if even those stop for
+  `STALL_LIVENESS_SECONDS` the process is wedged and is killed.
+- **progress** — no `prepare`/`file` event. Before the first one that's the *warm-up* budget
+  (`STALL_WARMUP_SECONDS`, default 600 s), since gallery-dl is silent for minutes while walking a
+  profile; afterwards it adapts to the observed inter-file rate.
+
+Re-running a profile is cheap: the per-profile gallery-dl archive means already-fetched files come
+back as `skipped`, so an interrupted or blocked run resumes where it stopped.
 
 ## Security
 

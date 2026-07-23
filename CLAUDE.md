@@ -43,7 +43,7 @@ docker compose up -d                           # prod
 ```
 Merging the dev overlay with the prod file is wrong: the overlay's `image: node:24-alpine` combines
 with prod's `build: ./frontend`, so compose builds the production frontend and tags it
-`node:24-alpine`. (`README.md` still documents the merged form — see "Known doc drift".)
+`node:24-alpine`.
 
 `docker-compose.hostdir.yml` is a separate, opt-in overlay that bind-mounts a host/NAS directory for
 media. Setting `DOWNLOADS_DIR` alone does **nothing** — the path also has to exist inside the
@@ -145,7 +145,7 @@ frontend code.
 - Never commit `backend/data/`, `*.sqlite`, `.env`, or cookies.
 - Keep `ROADMAP.md` current when a phase status changes (living document).
 
-## Known doc drift (verify before trusting)
-- `README.md` dev command and `ROADMAP.md` phase 3 still describe `next.config` rewrites / the merged
-  compose invocation; the code uses the catch-all proxy and the standalone dev file.
-- `frontend/src/lib/api.ts` header comment also still says "Next.js rewrites".
+## Docs to keep in sync
+`README.md` (quickstart + host-dir/NAS setup + rate limits), `ROADMAP.md` (phase status),
+`docs/event-contract.md` + `frontend/src/lib/events.ts` (the SSE schema — always both), and
+`.env.example` + both compose files (any new `Settings` field).
