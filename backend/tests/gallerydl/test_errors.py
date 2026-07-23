@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from gallery_dl_web.gallerydl.errors import detect_rate_limit
 
-# Shape of a real gallery-dl run; identifiers replaced with placeholders (a Facebook profile blocked after 104 images).
+# The shape of a real gallery-dl run (a Facebook profile blocked after 104 images), with every
+# identifier replaced by a placeholder. This repo is public: never commit a real username, profile
+# id or media id lifted from live output.
 FB_BLOCK = [
     '….facebook.com:443 "GET /photo/?fbid=1&set=a.2 HTTP/1.1" 200 None',
     "debug:facebook:",
@@ -25,9 +27,7 @@ def test_detects_facebook_block_and_resume_url() -> None:
     assert "temporarily blocked" in limit.message.lower()
     # Plain language for the operator, not a traceback.
     assert "Traceback" not in limit.message
-    assert limit.resume_url == (
-        "https://www.facebook.com/photo/?fbid=1&set=a.2&setextract"
-    )
+    assert limit.resume_url == ("https://www.facebook.com/photo/?fbid=1&set=a.2&setextract")
 
 
 def test_http_200_does_not_fool_it() -> None:

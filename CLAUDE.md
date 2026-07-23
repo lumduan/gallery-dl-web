@@ -160,6 +160,13 @@ locally (Dockerfile HEALTHCHECK); the catch-all proxy only forwards `/api/*`.
 JSON lines with an optional per-line delay — that delay is how stall behavior is tested). Worker
 tests monkeypatch `gallery_dl.job.DownloadJob`, so no network is needed anywhere in the suite.
 
+**A fixture copied from a live run must be sanitized before it is committed.** Replace every real
+username, profile id and media id with a placeholder — the repo is public, and those identify a
+third party, not you. `tests/gallerydl/test_errors.py` is the cautionary example: it was committed
+as "verbatim" stderr and carried a real Facebook username plus that person's photo and album ids
+through several releases before a history rewrite removed them. Keep the *shape* of the real
+output — that is what makes the fixture worth having — and nothing else.
+
 ## Frontend note
 `frontend/AGENTS.md` (aliased by `frontend/CLAUDE.md`) applies: this Next.js version has breaking
 changes vs. training data — read the relevant guide in `node_modules/next/dist/docs/` before writing
