@@ -104,6 +104,64 @@ def test_on_file_handles_non_str_pathformat(capsys: pytest.CaptureFixture[str], 
     assert evs[0]["bytes"] == 7
 
 
+class _PathfmtProxy:
+    """Stand-in for gallery-dl's PathfmtProxy at ``file``-hook time.
+
+    Mirrors the real ordering: the hook fires BEFORE ``finalize()`` renames ``temppath`` to
+    ``realpath``, so only the ``.part`` file exists yet. Missing attributes return None, as the
+    real proxy does.
+    """
+
+    def __init__(self, path: str, temppath: str) -> None:
+        self.path = self.realpath = path
+        self.temppath = temppath
+
+    def __str__(self) -> str:
+        return self.path
+
+
+def test_on_file_sizes_the_part_file_before_finalize(
+    capsys: pytest.CaptureFixture[str], tmp_path
+) -> None:
+    """Regression: every event reported bytes: null on a real run.
+
+    gallery-dl runs the ``file`` hook before ``PathFormat.finalize()`` moves the download into
+    place, so the final path does not exist yet and sizing it raised FileNotFoundError.
+    """
+    _reset_ctx()
+    final = tmp_path / "a.jpg"
+    part = tmp_path / "a.jpg.part"
+    part.write_bytes(b"x" * 609858)  # only the .part exists at hook time
+    assert not final.exists()
+
+    worker.on_file({"_path": _PathfmtProxy(str(final), str(part)), "filename": "a.jpg"})
+    evs = _events(capsys)
+    assert evs[0]["bytes"] == 609858
+    assert evs[0]["path"] == str(final)  # the FINAL path is still what we report
+
+
+def test_on_file_sizes_final_path_when_part_files_disabled(
+    capsys: pytest.CaptureFixture[str], tmp_path
+) -> None:
+    """With gallery-dl's `part` option off, temppath == realpath and the file is already there."""
+    _reset_ctx()
+    f = tmp_path / "a.jpg"
+    f.write_bytes(b"x" * 11)
+    worker.on_file({"_path": _PathfmtProxy(str(f), str(f)), "filename": "a.jpg"})
+    assert _events(capsys)[0]["bytes"] == 11
+
+
+def test_on_file_bytes_is_none_when_nothing_is_readable(
+    capsys: pytest.CaptureFixture[str], tmp_path
+) -> None:
+    """No file anywhere -> null, per the event contract. Must not raise."""
+    _reset_ctx()
+    missing = tmp_path / "gone.jpg"
+    worker.on_file({"_path": _PathfmtProxy(str(missing), str(missing) + ".part")})
+    evs = _events(capsys)
+    assert evs[0]["bytes"] is None
+
+
 def test_on_skip_emits_skipped_and_progress(capsys: pytest.CaptureFixture[str]) -> None:
     _reset_ctx()
     worker.on_file({"_path": "/x/a.jpg", "filename": "a.jpg"})  # downloaded=1 first

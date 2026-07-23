@@ -52,6 +52,36 @@ def _file_size(path: Any) -> int | None:
         return None
 
 
+def _downloaded_size(kwdict: dict[str, Any]) -> int | None:
+    """Size of the file the ``file`` hook just saw.
+
+    gallery-dl fires the ``file`` hook BEFORE ``PathFormat.finalize()`` moves the download into
+    place (job.py runs ``hooks["file"]`` and only then calls ``finalize()``, which does
+    ``os.replace(temppath, realpath)``). Until then the bytes live at ``temppath`` — ``<path>.part``
+    by default — so sizing the *final* path always raised FileNotFoundError and every event
+    reported ``bytes: null``.
+
+    ``kwdict["_path"]`` is a ``PathfmtProxy`` forwarding attribute access to the live PathFormat,
+    so ask it where the data actually is, newest location first. When part files are disabled
+    ``temppath == realpath``, so this stays correct either way.
+    """
+    proxy = kwdict.get("_path")
+    candidates: list[str] = []
+    if proxy is not None and not isinstance(proxy, str):
+        for attr in ("temppath", "realpath", "path"):
+            value = getattr(proxy, attr, None)
+            if value:
+                candidates.append(str(value))
+    resolved = _path_str(kwdict)
+    if resolved:
+        candidates.append(resolved)
+    for candidate in candidates:
+        size = _file_size(candidate)
+        if size is not None:
+            return size
+    return None
+
+
 def _emit(event: dict[str, Any]) -> None:
     event.setdefault("job_id", _CTX["job_id"])
     event.setdefault("ts", _now())
@@ -98,7 +128,7 @@ def on_file(kwdict: dict[str, Any]) -> None:
             "event": "downloaded",
             "path": path,
             "filename": kwdict.get("filename"),
-            "bytes": _file_size(path),
+            "bytes": _downloaded_size(kwdict),
         }
     )
     _emit_progress()
