@@ -123,7 +123,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
-    app = FastAPI(title="gallery-dl-web API", version="0.2.0", lifespan=lifespan)
+    app = FastAPI(title="gallery-dl-web API", version="0.3.0", lifespan=lifespan)
     app.state.settings = settings
     app.state.cookie_store = CookieStore(settings.cookies_path)
     app.state.profile_store = ProfileStore(settings)

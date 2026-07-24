@@ -13,6 +13,7 @@ flowchart TD
     P3 --> P4
     D1["D1 · Operator gets cookies<br/>DONE"] --> P4
     P4 --> P5["5 · Queue control<br/>pause / resume / stop<br/>DONE — v0.2.0"]
+    P3 --> P6["6 · Theming<br/>light / dark / system<br/>DONE — v0.3.0"]
 
     classDef done     fill:#d4f4dd,stroke:#2d8a4e,color:#1a5c33
     classDef active   fill:#fff3cd,stroke:#cc9a06,color:#7a5c04
@@ -23,6 +24,7 @@ flowchart TD
     class P3 done
     class P4 done
     class P5 done
+    class P6 done
     class D1 done
 ```
 
@@ -33,12 +35,14 @@ flowchart TD
 | **3 · Frontend** | ✅ DONE | Next.js pages: `/` (URL input + platform detect), `/jobs/[id]` (SSE progress + zip), `/settings` (cookies), `/downloads`; `EventSource` consumer; catch-all `/api/*` proxy route. typecheck + lint + build green | — |
 | **4 · Integrate and ship** | ✅ DONE | `docker-compose` (dev + prod + host-dir overlay); ghcr publish workflow; **live E2E verified** (real cookies, 1423 files across 3 profiles); **`v0.1.0` tagged 2026-07-23** → first ghcr publish | — |
 | **5 · Queue control** | ✅ DONE | `/queue` tab listing active + recent jobs; per-job **pause (SIGSTOP + slot release) / resume (SIGCONT) / stop (terminal `cancelled`)**; stop reconciles the profile's `metadata.json`; **`v0.2.0` tagged 2026-07-23** | — |
+| **6 · Theming** | ✅ DONE | Navbar **System / Light / Dark** menu; System follows the OS live via DaisyUI's `--prefersdark`, an explicit choice persists in `localStorage` and is applied pre-paint by an inline `<head>` script. Removed the create-next-app boilerplate that had the app hard-locked to light; **`v0.3.0` tagged 2026-07-24** | — |
 | **D1 · Operator cookies** | ✅ DONE | Real IG `sessionid` + FB cookies in use; live downloads confirmed 2026-07-23 | — |
 
-> **All phases are complete; the current release is `v0.2.0`** (`v0.1.0` shipped phase 4). Live E2E
-> passes against real Instagram and Facebook profiles, and both images publish to ghcr on tag. Note
-> that Facebook rate-limits an account after a few hundred images in one run ("temporarily blocked
-> from viewing images"); that is a platform limit, not a defect, and the job now reports it verbatim.
+> **All phases are complete; the current release is `v0.3.0`** (`v0.1.0` shipped phase 4, `v0.2.0`
+> phase 5). Live E2E passes against real Instagram and Facebook profiles, and both images publish to
+> ghcr on tag. Note that Facebook rate-limits an account after a few hundred images in one run
+> ("temporarily blocked from viewing images"); that is a platform limit, not a defect, and the job
+> now reports it verbatim.
 >
 > Next up is post-v0.1 work rather than a blocker: multi-account cookie storage, and resuming a
 > blocked Facebook run from gallery-dl's `&setextract` URL. (Job cancellation from the UI shipped
@@ -122,6 +126,28 @@ at `queued` with no explanation, and a browser refresh lost the only link to a r
 > after a force-push, the repository was deleted and recreated to guarantee removal. The published
 > container images never contained the data — `backend/Dockerfile` copies only `src/`. See the
 > sanitizing rule in `CLAUDE.md` under testing conventions.
+
+### 6 · Theming — ✅ DONE
+A **System / Light / Dark** menu on the navbar. Two pieces of `create-next-app` boilerplate had the
+app hard-locked to light and had to go first: `<html data-theme="light">` in `layout.tsx` pinned the
+DaisyUI theme, and an **unlayered** `body { background: var(--background) }` in `globals.css`
+outranked everything in Tailwind's `@layer utilities`, making the `bg-base-200` already on `<body>`
+dead code. Neither was visible while the app was light-only.
+- [x] **"System" is the absence of `data-theme`.** DaisyUI emits `--prefersdark` as
+      `@media (prefers-color-scheme: dark) { :root:not([data-theme]) { … } }`, so leaving the
+      attribute off hands the palette *and* `color-scheme` to CSS — a live OS change is picked up
+      with no `matchMedia` listener anywhere.
+- [x] No flash: an inline `<head>` script (`THEME_INIT_SCRIPT` in `lib/theme.ts`) re-applies a
+      stored light/dark choice during HTML parsing, per Next's own
+      *preventing-flash-before-hydration* guide; `<html>` carries `suppressHydrationWarning`.
+- [x] `ThemeToggle.tsx` holds **no React state** — all three modes are distinguishable in CSS, so
+      the trigger's sun/moon and the menu's ✓ are correct before hydration too. Nothing to mismatch.
+- [x] Zero component changes: every color in the app was already a DaisyUI semantic token.
+- [x] Verified headlessly across 4 states (system×light-OS, system×dark-OS, forced dark, forced
+      light) — attribute, `color-scheme`, resolved background and the visible icon/✓ all asserted;
+      frontend lint + typecheck + build green
+- [x] tag `v0.3.0` (2026-07-24) → ghcr publish of
+      `ghcr.io/lumduan/gallery-dl-web/{backend,frontend}:{latest,v0.3.0}`
 
 ### D1 · Operator cookies — ✅ DONE
 - **Primary (new): browser extension** — load `extension/` unpacked, set the server URL, click
