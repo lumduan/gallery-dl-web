@@ -158,11 +158,18 @@ locally (Dockerfile HEALTHCHECK); the catch-all proxy only forwards `/api/*`.
 leaving the attribute off is what hands the palette and `color-scheme` to the OS — live, with no
 `matchMedia` listener. Setting it makes the `:not()` guard stand down, which is what pins an
 explicit choice. That is why `layout.tsx` renders **no** `data-theme` and only an inline `<head>`
-script adds one, and why `ThemeToggle.tsx` holds no React state: all three modes are distinguishable
-in CSS (`globals.css`), so the sun/moon and the ✓ are right before hydration. Corollary: **never put
-an unlayered `body { background: … }` in `globals.css`** — unlayered rules outrank everything in
-Tailwind's `@layer utilities`, so one silently pins the page to a single color and turns the
-`bg-base-200` on `<body>` into dead code. That boilerplate is exactly what kept the app light-only.
+script adds one, and why neither theme control holds React state: all three modes are
+distinguishable in CSS (`globals.css`), so the sun/moon and the ✓ are right before hydration. The
+navbar menu (`ThemeToggle.tsx`) and the Settings card (`ThemeSetting.tsx`) both key off
+`THEME_OPTIONS`' `marker` classes in `lib/theme.ts`, which is what keeps them in step with no shared
+state; the navbar owns the one cross-tab `storage` listener because it is mounted on every page.
+
+Two corollaries, both about **unlayered CSS outranking everything in Tailwind's `@layer
+utilities`**: never put an unlayered `body { background: … }` in `globals.css` — one silently pins
+the page to a single color and turns the `bg-base-200` on `<body>` into dead code, which is exactly
+what kept the app light-only. And keep the selected-option emphasis scoped to `.theme-label` rather
+than the whole row, or it will outrank the `text-xs`/`font-*` utilities on the Settings row's
+description.
 
 ## Testing conventions
 `asyncio_mode = "auto"` (no `@pytest.mark.asyncio`). Tests build a fresh app per test via the

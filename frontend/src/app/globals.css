@@ -39,17 +39,25 @@
   display: inline;
 }
 
-/* Menu items: mark the selected mode. */
+/* Options: mark the selected mode, in the navbar menu and the Settings card alike. The emphasis is
+   scoped to `.theme-label` rather than the whole row because these rules are unlayered and would
+   otherwise outrank the `text-xs`/`font-*` utilities on the Settings row's description. */
 .theme-check {
   display: none;
 }
-:root:not([data-theme]) .theme-option-system,
-[data-theme="light"] .theme-option-light,
-[data-theme="dark"] .theme-option-dark {
+:root:not([data-theme]) .theme-option-system .theme-label,
+[data-theme="light"] .theme-option-light .theme-label,
+[data-theme="dark"] .theme-option-dark .theme-label {
   font-weight: 600;
 }
 :root:not([data-theme]) .theme-option-system .theme-check,
 [data-theme="light"] .theme-option-light .theme-check,
 [data-theme="dark"] .theme-option-dark .theme-check {
   display: inline;
+}
+/* Settings card only (`.theme-choice`): tint the selected row so the list scans at a glance. */
+:root:not([data-theme]) .theme-choice.theme-option-system,
+[data-theme="light"] .theme-choice.theme-option-light,
+[data-theme="dark"] .theme-choice.theme-option-dark {
+  background-color: var(--color-base-200);
 }

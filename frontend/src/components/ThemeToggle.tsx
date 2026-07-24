@@ -2,13 +2,14 @@
 
 import { useEffect } from "react";
 
-import { applyTheme, readTheme, storeTheme, THEME_STORAGE_KEY, type ThemeMode } from "@/lib/theme";
-
-const OPTIONS: { mode: ThemeMode; icon: string; label: string; marker: string }[] = [
-  { mode: "system", icon: "🖥️", label: "System", marker: "theme-option-system" },
-  { mode: "light", icon: "☀️", label: "Light", marker: "theme-option-light" },
-  { mode: "dark", icon: "🌙", label: "Dark", marker: "theme-option-dark" },
-];
+import {
+  applyTheme,
+  readTheme,
+  storeTheme,
+  THEME_OPTIONS,
+  THEME_STORAGE_KEY,
+  type ThemeMode,
+} from "@/lib/theme";
 
 /**
  * Theme menu: System (follows the OS) / Light / Dark, persisted per browser.
@@ -22,6 +23,9 @@ const OPTIONS: { mode: ThemeMode; icon: string; label: string; marker: string }[
  *
  * The trigger shows the RESOLVED appearance (sun or moon), the menu shows the SELECTED mode — two
  * different things on purpose.
+ *
+ * This lives in the navbar, so it is mounted on every page — which is why it, and not the Settings
+ * card, owns the cross-tab listener.
  */
 export function ThemeToggle() {
   useEffect(() => {
@@ -60,7 +64,7 @@ export function ThemeToggle() {
         tabIndex={0}
         className="dropdown-content menu w-40 p-2 gap-1 bg-base-100 border border-base-300 rounded-box shadow"
       >
-        {OPTIONS.map((o) => (
+        {THEME_OPTIONS.map((o) => (
           <li key={o.mode}>
             <button
               type="button"
@@ -68,7 +72,7 @@ export function ThemeToggle() {
               onClick={(e) => choose(o.mode, e.currentTarget)}
             >
               <span aria-hidden="true">{o.icon}</span>
-              {o.label}
+              <span className="theme-label">{o.label}</span>
               <span className="theme-check justify-self-end" role="img" aria-label="selected">
                 ✓
               </span>

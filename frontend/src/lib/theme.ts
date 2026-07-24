@@ -7,6 +7,43 @@ export type ThemeMode = "system" | "light" | "dark";
 export const THEME_STORAGE_KEY = "theme";
 
 /**
+ * The three modes, shared by the navbar menu and the Settings card so they can never drift.
+ *
+ * `marker` is the class the CSS in globals.css keys off to reveal the ✓ and embolden the label —
+ * which is how "what is selected" is rendered without React state. Anything using these options
+ * must put `marker` on the clickable element, and `theme-label` / `theme-check` on the children.
+ */
+export const THEME_OPTIONS: {
+  mode: ThemeMode;
+  icon: string;
+  label: string;
+  description: string;
+  marker: string;
+}[] = [
+  {
+    mode: "system",
+    icon: "🖥️",
+    label: "System",
+    description: "Follow the OS setting, and change with it.",
+    marker: "theme-option-system",
+  },
+  {
+    mode: "light",
+    icon: "☀️",
+    label: "Light",
+    description: "Always light, whatever the OS says.",
+    marker: "theme-option-light",
+  },
+  {
+    mode: "dark",
+    icon: "🌙",
+    label: "Dark",
+    description: "Always dark, whatever the OS says.",
+    marker: "theme-option-dark",
+  },
+];
+
+/**
  * "system" is the ABSENCE of `data-theme`, not a value.
  *
  * DaisyUI emits its `--prefersdark` theme as

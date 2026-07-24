@@ -188,11 +188,12 @@ Job state is in memory: restarting the backend clears the queue and stops anythi
 
 ## Appearance — light, dark, or follow the OS
 
-The ☀️/🌙 button at the right of the navbar picks **System**, **Light** or **Dark**. System is the
-default and tracks your OS setting live — flip your desktop to dark and the app follows without a
-reload. An explicit choice is remembered per browser (`localStorage`), and is applied before the
-page paints, so there is no flash of the wrong theme on load. Nothing is stored server-side, so two
-browsers can differ.
+The ☀️/🌙 button at the right of the navbar picks **System**, **Light** or **Dark**, and the same
+choice is available as a labelled list under **Settings → Appearance**. Either control updates the
+other immediately. System is the default and tracks your OS setting live — flip your desktop to dark
+and the app follows without a reload. An explicit choice is remembered per browser (`localStorage`),
+and is applied before the page paints, so there is no flash of the wrong theme on load. Nothing is
+stored server-side, so two browsers can differ.
 
 ## Rate limits and long-running jobs
 

@@ -35,7 +35,7 @@ flowchart TD
 | **3 · Frontend** | ✅ DONE | Next.js pages: `/` (URL input + platform detect), `/jobs/[id]` (SSE progress + zip), `/settings` (cookies), `/downloads`; `EventSource` consumer; catch-all `/api/*` proxy route. typecheck + lint + build green | — |
 | **4 · Integrate and ship** | ✅ DONE | `docker-compose` (dev + prod + host-dir overlay); ghcr publish workflow; **live E2E verified** (real cookies, 1423 files across 3 profiles); **`v0.1.0` tagged 2026-07-23** → first ghcr publish | — |
 | **5 · Queue control** | ✅ DONE | `/queue` tab listing active + recent jobs; per-job **pause (SIGSTOP + slot release) / resume (SIGCONT) / stop (terminal `cancelled`)**; stop reconciles the profile's `metadata.json`; **`v0.2.0` tagged 2026-07-23** | — |
-| **6 · Theming** | ✅ DONE | Navbar **System / Light / Dark** menu; System follows the OS live via DaisyUI's `--prefersdark`, an explicit choice persists in `localStorage` and is applied pre-paint by an inline `<head>` script. Removed the create-next-app boilerplate that had the app hard-locked to light; **`v0.3.0` tagged 2026-07-24** | — |
+| **6 · Theming** | ✅ DONE | **System / Light / Dark** from the navbar menu or **Settings → Appearance**; System follows the OS live via DaisyUI's `--prefersdark`, an explicit choice persists in `localStorage` and is applied pre-paint by an inline `<head>` script. Removed the create-next-app boilerplate that had the app hard-locked to light; **`v0.3.0` tagged 2026-07-24** | — |
 | **D1 · Operator cookies** | ✅ DONE | Real IG `sessionid` + FB cookies in use; live downloads confirmed 2026-07-23 | — |
 
 > **All phases are complete; the current release is `v0.3.0`** (`v0.1.0` shipped phase 4, `v0.2.0`
@@ -142,6 +142,10 @@ dead code. Neither was visible while the app was light-only.
       *preventing-flash-before-hydration* guide; `<html>` carries `suppressHydrationWarning`.
 - [x] `ThemeToggle.tsx` holds **no React state** — all three modes are distinguishable in CSS, so
       the trigger's sun/moon and the menu's ✓ are correct before hydration too. Nothing to mismatch.
+- [x] Two controls, one mechanism: the navbar menu and a **Settings → Appearance** card
+      (`ThemeSetting.tsx`) share `THEME_OPTIONS`' marker classes, so each reflects a change made in
+      the other with no state to keep in step. The navbar owns the single cross-tab listener,
+      because it is the one mounted on every page.
 - [x] Zero component changes: every color in the app was already a DaisyUI semantic token.
 - [x] Verified headlessly across 4 states (system×light-OS, system×dark-OS, forced dark, forced
       light) — attribute, `color-scheme`, resolved background and the visible icon/✓ all asserted;
