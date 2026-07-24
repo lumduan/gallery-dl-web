@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "gallery-dl-web cookie sender",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Send your own logged-in Instagram/Facebook cookies to your gallery-dl-web server (your session, your consent — one click, refreshable).",
   "permissions": ["cookies", "storage"],
   "host_permissions": [

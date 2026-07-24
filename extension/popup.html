@@ -3,20 +3,60 @@
   <head>
     <meta charset="utf-8" />
     <title>gallery-dl-web</title>
+    <!-- Must run before the body is parsed so a stored Light/Dark choice is applied before the
+         first paint. External file, not inline: MV3's extension CSP is `script-src 'self'`. -->
+    <script src="theme.js"></script>
     <style>
+      /* "System" is the ABSENCE of data-theme, matching the web app. Only `color-scheme` is
+         switched per mode; every colour below is a `light-dark()` pair that resolves from it, so
+         each token is declared once instead of duplicating a whole dark block. */
+      :root {
+        color-scheme: light;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-theme]) {
+          color-scheme: dark;
+        }
+      }
+      [data-theme="dark"] {
+        color-scheme: dark;
+      }
+      [data-theme="light"] {
+        color-scheme: light;
+      }
+
       :root {
         font-family: system-ui, -apple-system, Segoe UI, sans-serif;
-        color: #171717;
+        color: light-dark(#171717, #e8eaed);
+        --bg: light-dark(#f6f7f9, #1d232a);
+        --field-bg: light-dark(#ffffff, #15191e);
+        --border: light-dark(#cfd4da, #3a434e);
+        --muted: light-dark(#6b7280, #9aa4b2);
+        --ok: light-dark(#157f3f, #4ade80);
+        --err: light-dark(#b42318, #f87171);
+        --neutral: light-dark(#374151, #4b5563);
+        --seg-bg: light-dark(#e6e9ed, #15191e);
+        --seg-on: light-dark(#ffffff, #39424d);
+        --seg-shadow: light-dark(rgba(0, 0, 0, 0.16), rgba(0, 0, 0, 0.5));
       }
       body {
         width: 320px;
         margin: 0;
         padding: 16px;
-        background: #f6f7f9;
+        background: var(--bg);
+      }
+      .head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 0 0 12px;
       }
       h1 {
-        font-size: 15px;
-        margin: 0 0 12px;
+        /* 14px, not the original 15px: at 15px the title needs 259px and the picker 69px, which
+           overflows the 320px row and wraps the title onto two lines. */
+        font-size: 14px;
+        margin: 0;
+        flex: 1;
       }
       label {
         display: block;
@@ -28,9 +68,11 @@
         width: 100%;
         box-sizing: border-box;
         padding: 6px 8px;
-        border: 1px solid #cfd4da;
+        border: 1px solid var(--border);
         border-radius: 6px;
         font-size: 13px;
+        background: var(--field-bg);
+        color: inherit;
       }
       button {
         display: block;
@@ -55,7 +97,7 @@
         background: #1877f2;
       }
       .link {
-        background: #374151;
+        background: var(--neutral);
       }
       #status {
         margin-top: 12px;
@@ -64,15 +106,15 @@
         white-space: pre-wrap;
       }
       .ok {
-        color: #157f3f;
+        color: var(--ok);
       }
       .err {
-        color: #b42318;
+        color: var(--err);
       }
       .hint {
         margin-top: 12px;
         font-size: 11px;
-        color: #6b7280;
+        color: var(--muted);
         line-height: 1.4;
       }
       .row {
@@ -82,10 +124,80 @@
       .row button {
         margin-top: 8px;
       }
+
+      /* Theme picker — overrides the blanket `button` rule above, which is full-width and white. */
+      .theme {
+        display: flex;
+        gap: 2px;
+        padding: 2px;
+        border-radius: 7px;
+        background: var(--seg-bg);
+      }
+      .theme button {
+        width: auto;
+        margin: 0;
+        padding: 2px 5px;
+        border-radius: 5px;
+        font-size: 11px;
+        line-height: 1.2;
+        color: inherit;
+        background: transparent;
+        opacity: 0.55;
+      }
+      .theme button:hover {
+        opacity: 0.85;
+      }
+      /* Which mode is selected, straight from `data-theme` — so it is right before the first paint,
+         and "system" keeps tracking a live OS change on its own.
+
+         All three are prefixed with `:root` on purpose, and dropping it from the last two breaks
+         them: `:hover` counts as a class-level component, so `.theme button:hover` is (0,2,1) and
+         would outrank a bare `[data-theme="dark"] .theme-mode-dark` at (0,2,0) — the selected
+         button would dim to the hover opacity whenever the pointer was over it. `:root` makes each
+         (0,3,0). The System selector only escaped this because `:not()` already gave it the extra
+         unit. */
+      :root:not([data-theme]) .theme-mode-system,
+      :root[data-theme="light"] .theme-mode-light,
+      :root[data-theme="dark"] .theme-mode-dark {
+        background: var(--seg-on);
+        box-shadow: 0 1px 2px var(--seg-shadow);
+        opacity: 1;
+      }
     </style>
   </head>
   <body>
-    <h1>📷 gallery-dl-web cookie sender</h1>
+    <div class="head">
+      <h1>📷 gallery-dl-web cookie sender</h1>
+      <div class="theme" role="group" aria-label="Theme">
+        <button
+          type="button"
+          class="theme-mode theme-mode-system"
+          data-mode="system"
+          title="Follow the OS setting"
+          aria-label="System theme"
+        >
+          🖥️
+        </button>
+        <button
+          type="button"
+          class="theme-mode theme-mode-light"
+          data-mode="light"
+          title="Always light"
+          aria-label="Light theme"
+        >
+          ☀️
+        </button>
+        <button
+          type="button"
+          class="theme-mode theme-mode-dark"
+          data-mode="dark"
+          title="Always dark"
+          aria-label="Dark theme"
+        >
+          🌙
+        </button>
+      </div>
+    </div>
 
     <label for="server">gallery-dl-web server URL</label>
     <input id="server" type="text" placeholder="http://192.168.1.13:3100" />

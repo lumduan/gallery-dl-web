@@ -27,6 +27,15 @@ It replaces the need to copy-paste cookies by hand into the Settings page.
 **When it stops working** (IG/FB rotated or you logged out): just log back in and click the button
 again. That's the whole point — one-click refresh.
 
+## Appearance
+
+The 🖥️ / ☀️ / 🌙 buttons in the popup header pick **System**, **Light** or **Dark**, matching the
+web app. System is the default and follows your OS setting. The choice is remembered in this
+browser and applied before the popup paints, so it never flashes the wrong theme.
+
+It is **separate from the web app's setting** — a browser extension and a web page are different
+origins and cannot share storage, so setting one does not change the other.
+
 ## What it does, exactly
 
 - **Instagram:** reads the `sessionid` cookie for `instagram.com` and PUTs
@@ -50,4 +59,5 @@ Settings form uses.
 - Cookies are sent over **HTTP on your LAN**. Only run this on a trusted network. If you expose
   gallery-dl-web beyond your LAN, put it behind HTTPS first.
 - The extension is loaded unpacked by you; it is not on the Chrome Web Store (yet). Review the
-  ~120 lines of `popup.js` — it does only what's described above.
+  ~120 lines of `popup.js` — it does only what's described above. `theme.js` only reads and writes
+  the theme preference; it touches no cookies and makes no network requests.

@@ -146,6 +146,10 @@ dead code. Neither was visible while the app was light-only.
       (`ThemeSetting.tsx`) share `THEME_OPTIONS`' marker classes, so each reflects a change made in
       the other with no state to keep in step. The navbar owns the single cross-tab listener,
       because it is the one mounted on every page.
+- [x] The **extension popup** carries the same three modes (`extension/theme.js`). Two constraints
+      shape it: MV3's `script-src 'self'` means the pre-paint script must be an external file, and
+      `chrome.storage.local` is async — awaiting it flashes the whole 320px window — so the
+      preference lives in synchronous `localStorage` instead. Separate origin, so separate setting.
 - [x] Zero component changes: every color in the app was already a DaisyUI semantic token.
 - [x] Verified headlessly across 4 states (system×light-OS, system×dark-OS, forced dark, forced
       light) — attribute, `color-scheme`, resolved background and the visible icon/✓ all asserted;

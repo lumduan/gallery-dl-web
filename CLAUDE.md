@@ -171,6 +171,15 @@ what kept the app light-only. And keep the selected-option emphasis scoped to `.
 than the whole row, or it will outrank the `text-xs`/`font-*` utilities on the Settings row's
 description.
 
+**The extension popup repeats the same mechanism, with two constraints that invert the usual
+choices** (`extension/theme.js` + the `<style>` in `popup.html`). MV3's extension CSP is
+`script-src 'self'`, so the pre-paint script must be an **external file** — an inline `<script>`
+silently never runs. And the preference lives in **`localStorage`, not `chrome.storage.local`**
+like `serverUrl` does: chrome.storage is async, and awaiting it means the whole 320 px popup paints
+light and then flips. Don't "fix" either one. The selected-mode selectors are all prefixed `:root`
+because `:hover` counts as a class-level component — `.theme button:hover` is (0,2,1) and would
+outrank a bare `[data-theme="dark"] .theme-mode-dark` at (0,2,0).
+
 ## Testing conventions
 `asyncio_mode = "auto"` (no `@pytest.mark.asyncio`). Tests build a fresh app per test via the
 `app`/`tmp_settings` fixtures so `app.state` singletons are isolated. Manager tests monkeypatch

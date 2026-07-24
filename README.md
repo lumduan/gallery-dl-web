@@ -195,6 +195,9 @@ and the app follows without a reload. An explicit choice is remembered per brows
 and is applied before the page paints, so there is no flash of the wrong theme on load. Nothing is
 stored server-side, so two browsers can differ.
 
+The [browser extension](extension/README.md) popup has the same three modes in its header. It is a
+separate setting — an extension and a web page are different origins and cannot share storage.
+
 ## Rate limits and long-running jobs
 
 Both platforms throttle scraping, so requests are paced via gallery-dl's `sleep-request`:
