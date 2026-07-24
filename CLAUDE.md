@@ -153,6 +153,17 @@ delay. Raise the values after a block; a block costs far more time than the dela
 **`/health` is at the backend root, not under `/api`.** The frontend serves its own `/api/health`
 locally (Dockerfile HEALTHCHECK); the catch-all proxy only forwards `/api/*`.
 
+**The "system" theme is the *absence* of `data-theme` on `<html>`, not a value.** DaisyUI emits
+`--prefersdark` as `@media (prefers-color-scheme: dark) { :root:not([data-theme]) { … } }`, so
+leaving the attribute off is what hands the palette and `color-scheme` to the OS — live, with no
+`matchMedia` listener. Setting it makes the `:not()` guard stand down, which is what pins an
+explicit choice. That is why `layout.tsx` renders **no** `data-theme` and only an inline `<head>`
+script adds one, and why `ThemeToggle.tsx` holds no React state: all three modes are distinguishable
+in CSS (`globals.css`), so the sun/moon and the ✓ are right before hydration. Corollary: **never put
+an unlayered `body { background: … }` in `globals.css`** — unlayered rules outrank everything in
+Tailwind's `@layer utilities`, so one silently pins the page to a single color and turns the
+`bg-base-200` on `<body>` into dead code. That boilerplate is exactly what kept the app light-only.
+
 ## Testing conventions
 `asyncio_mode = "auto"` (no `@pytest.mark.asyncio`). Tests build a fresh app per test via the
 `app`/`tmp_settings` fixtures so `app.state` singletons are isolated. Manager tests monkeypatch

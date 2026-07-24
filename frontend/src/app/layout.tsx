@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Navbar } from "@/components/Navbar";
+import { THEME_INIT_SCRIPT } from "@/lib/theme";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -26,9 +27,15 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      data-theme="light"
+      suppressHydrationWarning
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
+      <head>
+        {/* Applies a stored light/dark choice before the first paint. No `data-theme` is rendered
+            here on purpose: its absence IS "system", which the stylesheet resolves from
+            prefers-color-scheme. `suppressHydrationWarning` above covers the attribute this adds. */}
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
+      </head>
       <body className="min-h-full flex flex-col bg-base-200">
         <Navbar />
         <main className="flex-1 container mx-auto px-4 py-8 max-w-3xl">{children}</main>

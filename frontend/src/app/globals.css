@@ -3,19 +3,53 @@
   themes: light --default, dark --prefersdark;
 }
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
+/* ── Theme menu (components/ThemeToggle.tsx) ──────────────────────────────────────────────────
+   `data-theme` on <html> is the toggle's entire state, and all three modes are distinguishable
+   here: `:root:not([data-theme])` is system — the same selector DaisyUI emits for `--prefersdark`
+   — and `[data-theme=light|dark]` are the explicit choices. Driving the trigger icon and the ✓
+   from CSS rather than React state means both are correct before hydration and both follow a live
+   OS change with no JS.
+
+   Do NOT add an unlayered `body { background: … }` here. Unlayered rules outrank everything in
+   Tailwind's `@layer utilities`, so one would silently pin the page to a single color and make the
+   `bg-base-200` on <body> dead code — that is exactly what the create-next-app boilerplate did,
+   and it is why dark mode did nothing before. */
+
+/* Trigger button: show the resolved appearance. */
+.theme-icon-dark {
+  display: none;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) .theme-icon-light {
+    display: none;
+  }
+  :root:not([data-theme]) .theme-icon-dark {
+    display: inline;
+  }
+}
+[data-theme="dark"] .theme-icon-light {
+  display: none;
+}
+[data-theme="dark"] .theme-icon-dark {
+  display: inline;
+}
+
+/* Menu items: mark the selected mode. */
+.theme-check {
+  display: none;
+}
+:root:not([data-theme]) .theme-option-system,
+[data-theme="light"] .theme-option-light,
+[data-theme="dark"] .theme-option-dark {
+  font-weight: 600;
+}
+:root:not([data-theme]) .theme-option-system .theme-check,
+[data-theme="light"] .theme-option-light .theme-check,
+[data-theme="dark"] .theme-option-dark .theme-check {
+  display: inline;
 }

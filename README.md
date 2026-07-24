@@ -186,6 +186,14 @@ disables) is stopped automatically rather than keeping a suspended process aroun
 
 Job state is in memory: restarting the backend clears the queue and stops anything in flight.
 
+## Appearance — light, dark, or follow the OS
+
+The ☀️/🌙 button at the right of the navbar picks **System**, **Light** or **Dark**. System is the
+default and tracks your OS setting live — flip your desktop to dark and the app follows without a
+reload. An explicit choice is remembered per browser (`localStorage`), and is applied before the
+page paints, so there is no flash of the wrong theme on load. Nothing is stored server-side, so two
+browsers can differ.
+
 ## Rate limits and long-running jobs
 
 Both platforms throttle scraping, so requests are paced via gallery-dl's `sleep-request`:

@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+import { ThemeToggle } from "@/components/ThemeToggle";
+
 const links = [
   { href: "/", label: "Download" },
   { href: "/queue", label: "Queue" },
@@ -21,7 +23,7 @@ export function Navbar() {
             📸 gallery-dl-web
           </Link>
         </div>
-        <div className="flex-none">
+        <div className="flex-none flex items-center gap-1">
           <ul className="menu menu-horizontal gap-1">
             {links.map((l) => (
               <li key={l.href}>
@@ -34,6 +36,7 @@ export function Navbar() {
               </li>
             ))}
           </ul>
+          <ThemeToggle />
         </div>
       </div>
     </div>
