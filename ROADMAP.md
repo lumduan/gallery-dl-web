@@ -38,11 +38,11 @@ flowchart TD
 | **6 · Theming** | ✅ DONE | **System / Light / Dark** from the navbar menu or **Settings → Appearance**; System follows the OS live via DaisyUI's `--prefersdark`, an explicit choice persists in `localStorage` and is applied pre-paint by an inline `<head>` script. Removed the create-next-app boilerplate that had the app hard-locked to light; **`v0.3.0` tagged 2026-07-24** | — |
 | **D1 · Operator cookies** | ✅ DONE | Real IG `sessionid` + FB cookies in use; live downloads confirmed 2026-07-23 | — |
 
-> **All phases are complete; the current release is `v0.3.0`** (`v0.1.0` shipped phase 4, `v0.2.0`
-> phase 5). Live E2E passes against real Instagram and Facebook profiles, and both images publish to
-> ghcr on tag. Note that Facebook rate-limits an account after a few hundred images in one run
-> ("temporarily blocked from viewing images"); that is a platform limit, not a defect, and the job
-> now reports it verbatim.
+> **All phases are complete; the current release is `v0.3.1`** (`v0.1.0` shipped phase 4, `v0.2.0`
+> phase 5, `v0.3.0` phase 6). Live E2E passes against real Instagram and Facebook profiles, and
+> both images publish to ghcr on tag. Note that Facebook rate-limits an account after a few hundred
+> images in one run ("temporarily blocked from viewing images"); that is a platform limit, not a
+> defect, and the job now reports it verbatim.
 >
 > Next up is post-v0.1 work rather than a blocker: multi-account cookie storage, and resuming a
 > blocked Facebook run from gallery-dl's `&setextract` URL. (Job cancellation from the UI shipped
@@ -152,6 +152,8 @@ dead code. Neither was visible while the app was light-only.
       frontend lint + typecheck + build green
 - [x] tag `v0.3.0` (2026-07-24) → ghcr publish of
       `ghcr.io/lumduan/gallery-dl-web/{backend,frontend}:{latest,v0.3.0}`
+- [x] tag `v0.3.1` (2026-07-24) → the Settings → Appearance card, a second surface for the same
+      preference; patch rather than minor because nothing about the mechanism changed
 
 ### D1 · Operator cookies — ✅ DONE
 - **Primary (new): browser extension** — load `extension/` unpacked, set the server URL, click
