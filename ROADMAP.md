@@ -42,7 +42,7 @@ flowchart TD
 | **7 · Anonymous mode** | ✅ DONE | Cookies are now **optional**: no cookies stored → the job runs logged-out instead of being refused, and `options.anonymous` forces that even when cookies exist. Anonymous IG switches to gallery-dl's `graphql` API and drops auth-only `include` categories; a login wall is classified as `reason: login-required` instead of a traceback. `missing-cookies` retired from the event contract. Five CI gates green (**90.4%** coverage); **live E2E 2026-08-16** — 9 real files off a public FB page with zero cookies; **`v0.4.0` tagged 2026-08-16** | — |
 | **D1 · Operator cookies** | ✅ DONE | Real IG `sessionid` + FB cookies in use; live downloads confirmed 2026-07-23 | — |
 
-> **All phases are complete; the current release is `v0.4.0`** (`v0.1.0` shipped phase 4, `v0.2.0`
+> **All phases are complete; the current release is `v0.4.1`** (`v0.1.0` shipped phase 4, `v0.2.0`
 > phase 5, `v0.3.0` phase 6, `v0.4.0` phase 7). Live E2E passes against real Instagram and Facebook
 > profiles, and both images publish to ghcr on tag. Note that Facebook rate-limits an account after a
 > few hundred images in one run ("temporarily blocked from viewing images"); that is a platform
@@ -52,13 +52,25 @@ flowchart TD
 > downloaded 9 real images with no cookies stored at all.
 >
 > ⚠️ **Anonymous Instagram is materially weaker than anonymous Facebook, and that is a platform
-> limit, not a defect.** In the same live run Instagram answered the logged-out GraphQL request with
-> a bare `401 Unauthorized`. The feature handles that correctly — it is classified as
-> `login-required` with a message pointing at Settings rather than a traceback — but do not expect
-> anonymous IG to actually fetch. **Treat anonymous mode as a Facebook-first capability**; for
-> Instagram, cookies remain the practical answer. That 401 is also *why* the classifier matches a
-> bare HTTP 401 and not only gallery-dl's `AuthRequired` prose: real Instagram never emitted the
-> prose at all.
+> limit, not a defect.** **Treat anonymous mode as a Facebook-first capability**; for Instagram,
+> cookies remain the practical answer. Measured against live Instagram on 2026-08-16, logged-out:
+>
+> | Endpoint | gallery-dl uses it as | Anonymous result |
+> |---|---|---|
+> | `web/search/topsearch` | user-strategy `search` (default #1) | 401 |
+> | `GET /<username>` | user-strategy `web` (default #2) | 200, but no `"profile_id"` to scrape |
+> | `api/v1/users/web_profile_info` | user-strategy `info` (**not** in the default list) | 200, real data |
+> | `graphql user_feed` | `api: graphql` listing | 400 |
+> | `api/v1/feed/user/<id>/` | `api: rest` listing | 200 but `"require_login":true`, 0 items |
+> | `graphql media` / `api/v1/media/<id>/info/` | single post | 401 / 302 |
+>
+> So a username *can* be resolved anonymously (via the unused `info` strategy), but **listing posts
+> is walled on every path gallery-dl uses** — no configuration makes anonymous IG download.
+> ⚠️ This also corrects the reasoning behind the `api: graphql` switch: it was chosen from reading
+> gallery-dl's source on the belief that REST 401s logged-out. It does not — REST returns a
+> *200-shaped* refusal. graphql is no better than the default and turns a single-post 302 into a
+> 401. **The switch is still in the code and is a known open question**, deliberately left alone
+> rather than changed without a decision.
 >
 > Remaining backlog, unchanged: multi-account cookie storage, and resuming a blocked Facebook run
 > from gallery-dl's `&setextract` URL. (Job cancellation from the UI shipped in phase 5.)
@@ -217,6 +229,16 @@ by `if cookies := self.config("cookies")`, so an absent cookie is a no-op rather
         anonymously" hint, `anonymous` badges, and the `login-required` alert.
 - [x] tag `v0.4.0` (2026-08-16) → ghcr publish of
       `ghcr.io/lumduan/gallery-dl-web/{backend,frontend}:{latest,v0.4.0}`
+- [x] **`v0.4.1` (2026-08-16) — the classifier fix the first live user report exposed.** An
+      anonymous IG profile job still surfaced a raw traceback: `detect_login_wall` matched only
+      gallery-dl's `AuthRequired` prose, which **real Instagram never emits**. What it actually
+      sends is a urllib3 debug line `… HTTP/1.1" 401 42` — status then *content length*, so the
+      word "Unauthorized" is nowhere on it — plus HTTP-200-with-`require_login` bodies. Both now
+      match, and `detect_login_wall` gained an `anonymous` flag so gallery-dl's generic
+      `NotFoundError: Requested user could not be found` counts as a wall only when there was no
+      session (with cookies it can be a genuinely deleted account).
+      ⇒ **The lesson worth keeping: match the text the platform actually returns, not the text the
+      client library defines.** The prose patterns were written from the source and looked right.
 
 ### D1 · Operator cookies — ✅ DONE
 - **Primary (new): browser extension** — load `extension/` unpacked, set the server URL, click
