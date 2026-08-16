@@ -218,3 +218,33 @@ def test_annotate_keeps_reason_and_appends_tail_for_ordinary_failures() -> None:
     mgr_mod._annotate_failure(event, deque(["error:facebook:HttpError: '404 Not Found'"]))
     assert event["reason"] == "dl-failed"
     assert "404 Not Found" in event["message"]
+
+
+def test_annotate_classifies_the_real_anonymous_ig_lookup_failure() -> None:
+    """Regression for the production report: this failed as `dl-failed` + a raw traceback.
+
+    The whole point of `login-required` is that this case reads as "add cookies", not as a bug.
+    """
+    from collections import deque
+
+    from tests.gallerydl.test_errors import ANON_USER_LOOKUP_FAILURE
+
+    event: dict = {"type": "failed", "reason": "dl-failed"}
+    mgr_mod._annotate_failure(event, deque(ANON_USER_LOOKUP_FAILURE), True)
+    assert event["reason"] == "login-required"
+    assert "Settings" in event["message"]
+    assert "Traceback" not in event["message"]
+
+
+def test_annotate_leaves_a_cookied_lookup_failure_alone() -> None:
+    """Same stderr, but the job had cookies — it may genuinely be a deleted account."""
+    from collections import deque
+
+    event: dict = {"type": "failed", "reason": "dl-failed"}
+    mgr_mod._annotate_failure(
+        event,
+        deque(["gallery_dl.exception.NotFoundError: Requested user could not be found"]),
+        False,
+    )
+    assert event["reason"] == "dl-failed"
+    assert "could not be found" in event["message"]

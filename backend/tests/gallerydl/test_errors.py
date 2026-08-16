@@ -86,6 +86,28 @@ LOGIN_WALL_LINES = [
     "gallery_dl.exception.HttpError: '401 Unauthorized' for "
     "'https://www.instagram.com/graphql/query/?query_hash=0&variables=%7B%7D'",
     'error:instagram:{"message": "login_required", "status": "fail"}',
+    # urllib3's connectionpool debug line — how a 401 usually actually reaches us. Note it prints
+    # the status then the CONTENT LENGTH ("401 42"); the word "Unauthorized" never appears, which
+    # is why a prose-only classifier missed this in production.
+    'debug:urllib3.connectionpool:https://www.instagram.com:443 "GET '
+    '/web/search/topsearch/?query=placeholder HTTP/1.1" 401 42',
+    # Instagram also refuses with HTTP 200 and require_login in the body — a 200-shaped wall.
+    'error:instagram:{"message":"Please wait a few minutes before you try again.",'
+    '"require_login":true,"status":"fail"}',
+]
+
+# The shape of a real anonymous-Instagram profile failure (identifiers replaced). gallery-dl tries
+# each user-strategy, swallows the real exception per strategy, then raises one generic
+# NotFoundError — so the text alone cannot distinguish an auth wall from a deleted account.
+ANON_USER_LOOKUP_FAILURE = [
+    'debug:urllib3.connectionpool:https://www.instagram.com:443 "GET '
+    '/web/search/topsearch/?query=placeholder HTTP/1.1" 401 42',
+    "debug:instagram:Failed to get user via 'search'",
+    'debug:urllib3.connectionpool:https://www.instagram.com:443 "GET /placeholder HTTP/1.1" '
+    "200 None",
+    "debug:instagram:Failed to get user via 'web'",
+    "error:instagram:NotFoundError: Requested user could not be found",
+    "gallery_dl.exception.NotFoundError: Requested user could not be found",
 ]
 
 
@@ -111,8 +133,41 @@ def test_ordinary_failures_are_not_login_walls() -> None:
         "fbid=4010000000000401",
         # 403 is deliberately excluded: platforms serve it for blocks, where "wait" is the advice.
         "gallery_dl.exception.HttpError: '403 Forbidden'",
+        # A successful urllib3 line must not match the HTTP-anchored 401 pattern.
+        'debug:urllib3.connectionpool:https://www.instagram.com:443 "GET /x HTTP/1.1" 200 401',
     ):
         assert detect_login_wall([line]) is False, line
+
+
+def test_anonymous_user_lookup_failure_is_a_login_wall() -> None:
+    """The real production failure: an anonymous IG profile whose username cannot be resolved.
+
+    Matched twice over — by the urllib3 401 unconditionally, and by the NotFoundError text under
+    ``anonymous`` — so it still classifies if gallery-dl's debug lines are ever absent.
+    """
+    assert detect_login_wall(ANON_USER_LOOKUP_FAILURE, anonymous=True) is True
+    # Without the debug lines, only the anonymous-conditional rule is left.
+    prose_only = [ln for ln in ANON_USER_LOOKUP_FAILURE if not ln.startswith("debug:")]
+    assert detect_login_wall(prose_only, anonymous=True) is True
+
+
+def test_user_not_found_alone_is_not_a_login_wall_for_a_cookied_job() -> None:
+    """With a session, "user could not be found" really can mean a deleted account.
+
+    Sending that operator to Settings to re-export cookies would be wrong, so the rule is
+    anonymous-only.
+    """
+    line = "gallery_dl.exception.NotFoundError: Requested user could not be found"
+    assert detect_login_wall([line], anonymous=False) is False
+    assert detect_login_wall([line], anonymous=True) is True
+
+
+def test_anonymous_flag_does_not_loosen_unrelated_failures() -> None:
+    for line in (
+        "error:facebook:HttpError: '404 Not Found'",
+        "PermissionError: [Errno 13] Permission denied: '/mnt/downloads/gallery'",
+    ):
+        assert detect_login_wall([line], anonymous=True) is False, line
 
 
 def test_login_wall_empty_input() -> None:

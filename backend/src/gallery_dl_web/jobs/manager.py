@@ -74,7 +74,9 @@ def _tail_text(lines: deque[str]) -> str:
     return f"worker output:\n{text}"
 
 
-def _annotate_failure(event: dict[str, Any], stderr_tail: deque[str]) -> None:
+def _annotate_failure(
+    event: dict[str, Any], stderr_tail: deque[str], anonymous: bool = False
+) -> None:
     """Enrich a terminal ``failed`` event from the worker's stderr, in place.
 
     A platform rate limit is promoted to its own ``reason`` with a plain-language message: it is
@@ -94,7 +96,7 @@ def _annotate_failure(event: dict[str, Any], stderr_tail: deque[str]) -> None:
         if limit.resume_url:
             event["resume_url"] = limit.resume_url
         return
-    if detect_login_wall(stderr_tail):
+    if detect_login_wall(stderr_tail, anonymous=anonymous):
         event["reason"] = "login-required"
         event["message"] = LOGIN_WALL_MESSAGE
         return
@@ -569,7 +571,7 @@ class JobManager:
             }
             # A job that ran out of progress *because* the platform blocked it should say so
             # rather than blaming the stall detector.
-            _annotate_failure(event, stderr_tail)
+            _annotate_failure(event, stderr_tail, state.anonymous)
             await self._emit(state, event)
             return
 
@@ -747,7 +749,7 @@ class JobManager:
                         # *why* (auth wall, 404, rate limit) only ever reaches stderr. Yield
                         # briefly first: the drain runs concurrently and may still have buffered.
                         await asyncio.sleep(_STDERR_SETTLE_SECONDS)
-                        _annotate_failure(event, stderr_tail)
+                        _annotate_failure(event, stderr_tail, state.anonymous)
                     await self._emit(state, event)
                     return "terminal"
                 await self._emit(state, event)

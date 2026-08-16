@@ -69,11 +69,15 @@ Both sides must honor it; the TS mirror lives in `frontend/src/lib/events.ts`.
     `missing-cookies` reason — it was retired. gallery-dl reaches public content logged-out, so the
     manager falls back to an anonymous run (and an operator can force one with `options.anonymous`
     even when cookies *are* stored). If the content turns out to need a session, the failure says
-    so: stderr matching gallery-dl's `AuthRequired` wording is promoted to `reason: login-required`
-    with a plain-language `message` pointing at Settings, by
-    `gallerydl/errors.py:detect_login_wall`. A **rate limit is classified first** — Facebook's block
-    page carries login-ish wording, and there the correct advice is to wait, not to re-export
-    cookies. `JobSummary.anonymous` reports which mode a job actually ran in.
+    so: stderr matching an auth wall is promoted to `reason: login-required` with a plain-language
+    `message` pointing at Settings, by `gallerydl/errors.py:detect_login_wall`. That match covers
+    gallery-dl's `AuthRequired` prose, a urllib3 `… HTTP/1.1" 401 <len>` debug line, and Instagram's
+    HTTP-200-plus-`require_login` refusal — the prose alone misses the common cases. The detector
+    also takes `anonymous`, which widens it to `NotFoundError: Requested user could not be found`:
+    that text is a failed username lookup, which is an auth wall with no session but can be a
+    genuinely deleted account with one. A **rate limit is classified first** — Facebook's block page
+    carries login-ish wording, and there the correct advice is to wait, not to re-export cookies.
+    `JobSummary.anonymous` reports which mode a job actually ran in.
 12. **Pause is a real process suspension**, driven by `POST /api/jobs/{id}/pause`. The manager
     SIGSTOPs the worker, so gallery-dl keeps its place in the profile walk and no `heartbeat`
     arrives until it resumes. The concurrency slot is handed back — that is the point, a waiting
