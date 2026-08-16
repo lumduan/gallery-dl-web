@@ -66,6 +66,13 @@ function JobRow({
         </Link>
         <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-base-content/70">
           <span className={`badge badge-sm ${statusBadge(job.status)}`}>{job.status}</span>
+          {/* Two jobs that ran with and without a session behave very differently; without this
+              they are indistinguishable in the queue. */}
+          {job.anonymous && (
+            <span className="badge badge-ghost badge-sm" title="Ran logged-out — public content only">
+              anonymous
+            </span>
+          )}
           {job.status === "queued" && !resuming && (
             <span>
               waiting
@@ -167,6 +174,14 @@ export function QueueList() {
                     </span>
                     {title(job)}
                   </Link>
+                  {job.anonymous && (
+                    <span
+                      className="badge badge-ghost badge-sm"
+                      title="Ran logged-out — public content only"
+                    >
+                      anonymous
+                    </span>
+                  )}
                   <span className={`badge badge-sm ${statusBadge(job.status)}`}>{job.status}</span>
                   <span className="text-xs text-base-content/60">{outcome(job)}</span>
                 </li>

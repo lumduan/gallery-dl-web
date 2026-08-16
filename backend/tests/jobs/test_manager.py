@@ -7,14 +7,61 @@ from gallery_dl_web.jobs import manager as mgr_mod
 from gallery_dl_web.jobs.models import JobState, JobStatus
 
 
-async def test_missing_cookies_fails_without_subprocess(job_manager) -> None:
-    # No cookies configured -> job fails immediately with a clear reason.
+async def test_no_cookies_falls_back_to_anonymous(job_manager, fake_spawn, capture_spawn) -> None:
+    # No cookies configured -> run logged-out rather than refusing. gallery-dl reaches public
+    # content without a session; if it does hit a wall, _annotate_failure says login-required.
+    seen = capture_spawn(
+        fake_spawn(
+            [json.dumps({"type": "completed", "exit_status": 0, "downloaded": 0, "skipped": 0})]
+        )
+    )
     jid = await job_manager.create_job("https://instagram.com/p/x/", "instagram")
     await job_manager.wait_for(jid)
     state = job_manager.get(jid)
     assert state is not None
-    assert state.status is JobStatus.FAILED
-    assert state.final_summary["reason"] == "missing-cookies"
+    assert state.status is JobStatus.COMPLETED
+    assert state.anonymous is True
+    assert seen[0]["anonymous"] is True
+    assert seen[0]["cookies"] is None
+
+
+async def test_explicit_anonymous_ignores_stored_cookies(
+    job_manager, cookie_store, fake_spawn, capture_spawn
+) -> None:
+    # Opting in with cookies on file must not send them — the point is to spare a real session.
+    cookie_store.update(ig_sessionid="SID")
+    seen = capture_spawn(
+        fake_spawn(
+            [json.dumps({"type": "completed", "exit_status": 0, "downloaded": 0, "skipped": 0})]
+        )
+    )
+    jid = await job_manager.create_job(
+        "https://instagram.com/p/x/", "instagram", {"anonymous": True}
+    )
+    await job_manager.wait_for(jid)
+    assert seen[0]["anonymous"] is True
+    assert seen[0]["cookies"] is None
+    # The flag is consumed by the manager; config_builder only reads known option keys, so leaving
+    # it in `options` would be dead weight that still shows up in a payload dump.
+    assert "anonymous" not in seen[0]["options"]
+
+
+async def test_stored_cookies_are_used_when_not_opting_out(
+    job_manager, cookie_store, fake_spawn, capture_spawn
+) -> None:
+    cookie_store.update(ig_sessionid="SID")
+    seen = capture_spawn(
+        fake_spawn(
+            [json.dumps({"type": "completed", "exit_status": 0, "downloaded": 0, "skipped": 0})]
+        )
+    )
+    jid = await job_manager.create_job("https://instagram.com/p/x/", "instagram")
+    await job_manager.wait_for(jid)
+    state = job_manager.get(jid)
+    assert state is not None
+    assert state.anonymous is False
+    assert seen[0]["anonymous"] is False
+    assert seen[0]["cookies"] == {"sessionid": "SID"}
 
 
 async def test_completed_flow_and_subscriber_fanout(
@@ -128,3 +175,46 @@ async def test_list_jobs_sorted_newest_first(job_manager) -> None:
     await job_manager.create_job("https://instagram.com/p/b/", "instagram")
     jobs = job_manager.list_jobs()
     assert [j.url for j in jobs] == ["https://instagram.com/p/b/", "https://instagram.com/p/a/"]
+
+
+# ------------------------------------------------------------------ failure annotation
+
+
+def test_annotate_promotes_login_wall_to_login_required() -> None:
+    from collections import deque
+
+    event: dict = {"type": "failed", "reason": "dl-failed"}
+    mgr_mod._annotate_failure(
+        event,
+        deque(["gallery_dl.exception.AuthRequired: You must be logged in to continue viewing."]),
+    )
+    assert event["reason"] == "login-required"
+    assert "Settings" in event["message"]
+    # Plain language for the operator, not the raw tail.
+    assert "worker output" not in event["message"]
+
+
+def test_rate_limit_beats_login_wall_in_annotation() -> None:
+    """FB's block page carries login-ish wording; "wait it out" is the correct advice there."""
+    from collections import deque
+
+    event: dict = {"type": "failed", "reason": "dl-failed"}
+    mgr_mod._annotate_failure(
+        event,
+        deque(
+            [
+                "AbortExtraction: You've been temporarily blocked from viewing images.",
+                "AuthRequired: You must be logged in to continue viewing images.",
+            ]
+        ),
+    )
+    assert event["reason"] == "rate-limited"
+
+
+def test_annotate_keeps_reason_and_appends_tail_for_ordinary_failures() -> None:
+    from collections import deque
+
+    event: dict = {"type": "failed", "reason": "dl-failed", "message": "boom"}
+    mgr_mod._annotate_failure(event, deque(["error:facebook:HttpError: '404 Not Found'"]))
+    assert event["reason"] == "dl-failed"
+    assert "404 Not Found" in event["message"]

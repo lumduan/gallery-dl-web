@@ -153,6 +153,57 @@ def fake_spawn() -> Callable[..., Callable[[str, dict[str, Any]], Awaitable[Fake
     return factory
 
 
+@pytest.fixture(autouse=True)
+def _no_real_spawn(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Safety net: a test must never launch a real gallery-dl worker (or touch the network).
+
+    Before anonymous mode there was an accidental guard — a job with no cookies failed in
+    ``_run_job`` before ``spawn_worker`` was reached, so a test that created a job without
+    configuring cookies could not spawn anything. That pre-flight is gone by design: no cookies now
+    means "run logged-out", which reaches the spawn. This restores the guarantee explicitly.
+
+    Tests that install their own ``spawn_worker`` via ``fake_spawn`` still win — monkeypatch applies
+    theirs after this one.
+    """
+    import json as _json
+
+    from gallery_dl_web.jobs import manager as _mgr
+
+    async def _spawn(python: str, payload: dict[str, Any]) -> FakeProc:  # noqa: ARG001
+        return FakeProc(
+            [_json.dumps({"type": "completed", "exit_status": 0, "downloaded": 0, "skipped": 0})]
+        )
+
+    monkeypatch.setattr(_mgr, "spawn_worker", _spawn)
+
+
+@pytest.fixture
+def capture_spawn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Callable[[Callable[[str, dict[str, Any]], Awaitable[FakeProc]]], list[dict[str, Any]]]:
+    """Install a ``spawn_worker`` and return the list it records each payload into.
+
+    The payload is the only place ``cookies`` / ``anonymous`` are observable — they never reach
+    argv, an API response, or a log line.
+    """
+
+    def install(
+        inner: Callable[[str, dict[str, Any]], Awaitable[FakeProc]],
+    ) -> list[dict[str, Any]]:
+        from gallery_dl_web.jobs import manager as _mgr
+
+        seen: list[dict[str, Any]] = []
+
+        async def _spawn(python: str, payload: dict[str, Any]) -> FakeProc:
+            seen.append(payload)
+            return await inner(python, payload)
+
+        monkeypatch.setattr(_mgr, "spawn_worker", _spawn)
+        return seen
+
+    return install
+
+
 @pytest.fixture
 def cookie_store(app: FastAPI) -> CookieStore:
     # Return the SAME instance the app's JobManager reads, so tests that set cookies are visible

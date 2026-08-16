@@ -69,6 +69,10 @@ class JobState:
     # Display name for the queue UI (URL-derived up front, replaced by gallery-dl's actual folder
     # name once a file lands — the two differ, see profiles/urls.py).
     profile: str | None = None
+    # Whether this job ran logged-out. Resolved in _run_job (operator opt-in, or no cookies stored
+    # for the platform) and surfaced in the queue: two jobs that behaved completely differently
+    # would otherwise be indistinguishable in the UI.
+    anonymous: bool = False
 
     @property
     def is_terminal(self) -> bool:
@@ -85,6 +89,7 @@ class JobState:
             "url": self.url,
             "platform": self.platform,
             "profile": self.profile,
+            "anonymous": self.anonymous,
             "status": self.status.value,
             "created_at": self.created_at,
             "started_at": self.started_at,

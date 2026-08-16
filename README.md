@@ -31,10 +31,31 @@ important because this repo is public.
 
 ## Quickstart
 
-### 1. Configure cookies (required)
+### 1. Configure cookies (optional)
 
-gallery-dl disables password login for Instagram, so auth is cookie-based. You provide your own
-logged-in cookies — there are two ways:
+**You can skip this and download from public profiles right away.** With no cookies stored for a
+platform, a job runs **anonymously** (logged-out), and you can force that per job with the
+*"Anonymous — don't use my cookies"* checkbox even when cookies *are* stored — handy for a public
+profile you'd rather not spend a real session on.
+
+What anonymous mode does *not* reach:
+
+- private, restricted, or otherwise login-walled content — that fails with a clear
+  `login-required` message pointing back here, not a traceback;
+- on Instagram, `stories` / `highlights` / `saved` / `collection`, which are dropped from `include`
+  automatically (logged-out they abort the whole extraction rather than just coming back empty).
+  Anonymous Instagram jobs also switch to gallery-dl's `graphql` API, since its default REST
+  endpoints reject logged-out requests.
+
+> ⚠️ **In practice, treat anonymous mode as a Facebook capability.** Verified 2026-08-16: a public
+> Facebook page downloads fine with no cookies, while Instagram answered the logged-out request with
+> `401 Unauthorized`. The job reports that clearly (`login-required`, with a link back to Settings)
+> rather than dumping a traceback — but for Instagram, cookies remain the practical answer.
+
+Note that logged-out requests are rate-limited by **IP** rather than by account, so the
+`*_SLEEP_REQUEST_*` pacing below still matters — arguably more, since a block hits the whole host.
+
+To reach everything else, provide your own logged-in cookies — there are two ways:
 
 **Option A — browser extension (recommended).** Load the [`extension/`](extension/README.md) folder
 unpacked in Chrome/Edge/Brave, set your gallery-dl-web server URL in its popup, then click
@@ -70,7 +91,8 @@ docker compose -f docker-compose.dev.yml up
 > `image: node:24-alpine`, so Docker builds the production frontend and tags it as your local Node
 > base image.
 
-Open <http://localhost:3000>, paste a public IG/FB URL, and watch it download.
+Open <http://localhost:3000>, paste a public IG/FB URL, and watch it download. With no cookies
+configured this runs anonymously; the queue tags such jobs `anonymous`.
 
 ### Storing media on another disk / a NAS
 
@@ -131,7 +153,7 @@ npm run typecheck && npm run lint
 
 | Method | Path                         | Purpose                                  |
 | ------ | ---------------------------- | ---------------------------------------- |
-| POST   | `/api/jobs`                  | Create a download job → `202 {job_id}`   |
+| POST   | `/api/jobs`                  | Create a download job → `202 {job_id}`. `options.anonymous: true` forces a logged-out run |
 | GET    | `/api/jobs`                  | List jobs                                |
 | GET    | `/api/jobs/{id}`             | Job snapshot                             |
 | GET    | `/api/jobs?active=1`         | Only queued / running / paused jobs      |

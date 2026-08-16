@@ -8,6 +8,8 @@ export interface JobSummary {
   platform: string;
   /** Profile display name; null for single-post URLs. */
   profile: string | null;
+  /** Ran logged-out — either opted into, or because no cookies are stored for the platform. */
+  anonymous: boolean;
   status: string;
   created_at: number;
   started_at: number | null;

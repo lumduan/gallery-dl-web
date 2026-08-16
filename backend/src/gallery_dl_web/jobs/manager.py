@@ -28,7 +28,11 @@ from typing import Any
 
 from gallery_dl_web.config import Settings
 from gallery_dl_web.cookies.store import CookieStore
-from gallery_dl_web.gallerydl.errors import detect_rate_limit
+from gallery_dl_web.gallerydl.errors import (
+    LOGIN_WALL_MESSAGE,
+    detect_login_wall,
+    detect_rate_limit,
+)
 from gallery_dl_web.jobs.models import JobState, JobStatus
 from gallery_dl_web.jobs.worker_runner import spawn_worker
 from gallery_dl_web.profiles.store import ProfileStore
@@ -75,8 +79,13 @@ def _annotate_failure(event: dict[str, Any], stderr_tail: deque[str]) -> None:
 
     A platform rate limit is promoted to its own ``reason`` with a plain-language message: it is
     not an application error, the operator's only useful action is to wait, and retrying makes it
-    worse. Everything else keeps its gallery-dl reason and gets the raw tail appended, which is
-    where the real cause (auth wall, permission denied, 404) shows up.
+    worse. A login wall is promoted next — it is what an anonymous job hits on private or
+    session-walled content, and the operator's action is to add cookies. Everything else keeps its
+    gallery-dl reason and gets the raw tail appended, which is where the real cause (permission
+    denied, 404) shows up.
+
+    Order matters: a rate limit is checked FIRST because Facebook's block page is also served with
+    login-ish wording, and "wait it out" is the correct advice there — "add cookies" is not.
     """
     limit = detect_rate_limit(stderr_tail)
     if limit is not None:
@@ -84,6 +93,10 @@ def _annotate_failure(event: dict[str, Any], stderr_tail: deque[str]) -> None:
         event["message"] = limit.message
         if limit.resume_url:
             event["resume_url"] = limit.resume_url
+        return
+    if detect_login_wall(stderr_tail):
+        event["reason"] = "login-required"
+        event["message"] = LOGIN_WALL_MESSAGE
         return
     tail = _tail_text(stderr_tail)
     if tail:
@@ -314,23 +327,17 @@ class JobManager:
                 # The worker emits the authoritative "started" event (per the event contract);
                 # we only flip the internal status here to avoid a duplicate on the wire.
 
+                # Anonymous (logged-out) mode. Either the operator asked for it explicitly — so a
+                # public profile does not burn a real session — or no cookies are stored for this
+                # platform, in which case attempting it beats refusing: gallery-dl reaches public
+                # content logged-out, and if it does hit a wall the failure says so (login-required)
+                # instead of pre-judging. `pop` keeps the flag out of payload["options"], where
+                # config_builder would ignore it anyway.
                 cookies = self._cookies.get_for_platform(state.platform)
-                if not cookies:
-                    await self._emit(
-                        state,
-                        {
-                            "type": "failed",
-                            "job_id": state.id,
-                            "exit_status": 0,
-                            "reason": "missing-cookies",
-                            "message": (
-                                f"No cookies configured for {state.platform}. "
-                                "Add them in Settings before downloading."
-                            ),
-                            "ts": time.time(),
-                        },
-                    )
-                    return
+                anonymous = bool(options.pop("anonymous", False)) or not cookies
+                if anonymous:
+                    cookies = None
+                state.anonymous = anonymous
 
                 problem = self._downloads_dir_problem(state.platform)
                 if problem is not None:
@@ -347,7 +354,7 @@ class JobManager:
                     )
                     return
 
-                await self._spawn_and_stream(state, options, cookies)
+                await self._spawn_and_stream(state, options, cookies, anonymous)
             finally:
                 self._leave_slot(state)
         except asyncio.CancelledError:
@@ -469,7 +476,8 @@ class JobManager:
         self,
         state: JobState,
         options: dict[str, Any],
-        cookies: dict[str, Any] | str,
+        cookies: dict[str, Any] | str | None,
+        anonymous: bool,
     ) -> None:
         """Spawn the worker, stream events with stall deadlines, retry on stall/crash.
 
@@ -478,7 +486,7 @@ class JobManager:
         walk from zero — the per-profile archive can only resume what was actually downloaded. So
         warm-up gets ``stall_warmup_max_retries``; once files are flowing, ``stall_max_retries``.
         """
-        payload = self._build_payload(state, options, cookies)
+        payload = self._build_payload(state, options, cookies, anonymous)
         python = self._settings.worker_python or sys.executable
 
         attempt = 0
@@ -573,8 +581,8 @@ class JobManager:
             return (
                 "no-progress",
                 "gallery-dl never produced a file before the warm-up deadline. The profile may be "
-                "private or restricted, the session cookies may be stale, or the platform may be "
-                "throttling. See the details below.",
+                "private or restricted, the session cookies may be stale (or absent, if this ran "
+                "anonymously), or the platform may be throttling. See the details below.",
             )
         return "stalled", "download stalled (no progress within threshold); retries exhausted"
 
@@ -881,7 +889,8 @@ class JobManager:
         self,
         state: JobState,
         options: dict[str, Any],
-        cookies: dict[str, Any] | str,
+        cookies: dict[str, Any] | str | None,
+        anonymous: bool,
     ) -> dict[str, Any]:
         merged = dict(options)
         # Per-request pacing from Settings so it can be tuned by env var after a rate-limit block,
@@ -909,6 +918,7 @@ class JobManager:
             "url": state.url,
             "platform": state.platform,
             "output_dir": str(self._settings.downloads_dir),
+            "anonymous": anonymous,
             "cookies": cookies,
             "options": merged,
             "http_timeout_seconds": self._settings.http_timeout_seconds,
