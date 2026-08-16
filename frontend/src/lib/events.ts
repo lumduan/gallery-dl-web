@@ -49,6 +49,12 @@ export interface JobEvent {
   message?: string;
   kind?: string;
   fatal?: boolean;
+  /**
+   * On `failed`: `stalled` | `no-progress` | `rate-limited` | `login-required` | `worker-crash` |
+   * `downloads-dir-unwritable` | a gallery-dl reason such as `dl-failed`.
+   * `login-required` is what an anonymous (cookie-free) run hits on private or session-walled
+   * content — the operator's action is to add cookies in Settings.
+   */
   reason?: string;
   /** failed/rate-limited only: a URL the platform gave to resume from (gallery-dl's &setextract). */
   resume_url?: string;

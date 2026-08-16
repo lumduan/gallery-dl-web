@@ -9,6 +9,11 @@ export default function SettingsPage() {
         Credentials are stored only in the backend&apos;s <code>/data/cookies.json</code> (mode 0600,
         gitignored). They are never returned over the API — only whether each is set.
       </p>
+      <p className="text-sm text-base-content/70">
+        Cookies are <b>optional</b>: with none stored, a job runs anonymously and downloads from
+        public profiles. Add them to reach private or restricted content, and for more reliable
+        Instagram results — logged-out, Instagram skips stories, highlights and saved posts.
+      </p>
 
       <div className="alert alert-info flex flex-col items-start gap-2 py-3">
         <div className="font-semibold">📷 Easiest: use the browser extension</div>

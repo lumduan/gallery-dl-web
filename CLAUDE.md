@@ -121,6 +121,37 @@ consumes it continuously. Undrained, ~64 KB blocks the worker mid-write — its 
 and the stall detector reports a phantom stall. The tail is attached to `failed.message`, which is
 the only place gallery-dl's real error text (auth wall, rate limit, permission denied) ever appears.
 
+**Cookies are optional; a job with none runs anonymously.** There is no `missing-cookies` failure
+any more — gallery-dl reaches public content logged-out, so `_run_job` falls back to an anonymous
+run, and `options.anonymous` forces one even when cookies are stored. The flag is a **top-level
+payload key** next to `cookies` (the manager `pop`s it out of `options`, which `config_builder`
+only reads for keys in `_PLATFORM_DEFAULTS`), and `cookies` is then `None`. Setting
+`config.set(("extractor", <platform>), "cookies", None)` is deliberate and safe: gallery-dl's
+`Extractor._init_cookies` is guarded by `if cookies := self.config("cookies")`, so a falsy value
+no-ops rather than erroring, and the explicit call keeps the "cookies are set *before* the defaults
+loop, so an `options` key can never overwrite them" invariant intact.
+
+Two anonymous-only Instagram adjustments, neither of which applies to Facebook: `api` is set to
+`graphql` (the default REST `/api/v1/*` endpoints mostly 401 logged-out), and `stories` /
+`highlights` / `saved` / `collection` are stripped from `include` — logged-out these raise
+`AbortExtraction` and kill the whole walk instead of merely returning nothing.
+
+**`include` is resolved exactly once, before the defaults loop** (`_resolve_include`), because the
+avatar block appends to it. It used to be derived twice from raw `options`; leave it that way and
+the avatar append silently re-introduces the categories anonymous mode just filtered out.
+
+**A login wall is classified, and rate-limiting wins the tie.** `errors.py:detect_login_wall`
+matches gallery-dl's own `AuthRequired` wording and `_annotate_failure` promotes it to
+`reason: login-required`. It is checked *after* `detect_rate_limit`: Facebook's block page also
+reads login-ish, and there the right advice is "wait", not "re-export your cookies" — retrying
+extends the block. Keep that order.
+
+**Tests must never spawn a real worker, and the autouse `_no_real_spawn` fixture is what guarantees
+it.** Before anonymous mode there was an accidental guard — a cookie-less job failed before
+reaching `spawn_worker` — so tests could create jobs without patching anything. That is gone by
+design, so `tests/conftest.py` patches a harmless default; `fake_spawn`/`capture_spawn` still
+override it.
+
 **The downloads dir is checked before spawning, including the per-platform subdirectory.** A
 writable root with an unwritable child is the nasty case: reads succeed, so archived files report
 `skipped` and the job looks healthy while every actual download fails. Typically caused by seeding

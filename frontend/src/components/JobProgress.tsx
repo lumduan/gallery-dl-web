@@ -163,6 +163,14 @@ export function JobProgress({ jobId }: { jobId: string }) {
           <div className="flex items-center justify-between gap-2">
             <h2 className="card-title truncate">Job {jobId.slice(0, 12)}…</h2>
             <div className="flex items-center gap-2">
+              {summary?.anonymous && (
+                <span
+                  className="badge badge-ghost badge-sm"
+                  title="Ran logged-out — public content only"
+                >
+                  anonymous
+                </span>
+              )}
               <StatusBadge status={status} />
               <JobControls jobId={jobId} status={status} onChanged={setStatus} />
             </div>
@@ -231,13 +239,17 @@ export function JobProgress({ jobId }: { jobId: string }) {
                 finalReason.reason === "rate-limited" ? "alert-warning" : "alert-error"
               }`}
             >
-              {finalReason.reason === "missing-cookies" ? (
+              {finalReason.reason === "login-required" ? (
                 <>
-                  No cookies configured for this platform.{" "}
-                  <a className="link" href="/settings">
-                    Add them in Settings
-                  </a>
-                  .
+                  <span className="font-semibold">This content needs a logged-in session.</span>
+                  <span>
+                    The profile is private or restricted, or the platform refused anonymous
+                    access.{" "}
+                    <a className="link" href="/settings">
+                      Add cookies in Settings
+                    </a>{" "}
+                    and run it again — files already downloaded are skipped.
+                  </span>
                 </>
               ) : finalReason.reason === "rate-limited" ? (
                 <>

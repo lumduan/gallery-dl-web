@@ -27,7 +27,7 @@ def test_payload_carries_pacing(job_manager, tmp_settings: Settings) -> None:
     tmp_settings.facebook_sleep_request_min = 5
     tmp_settings.facebook_sleep_request_max = 11
     st = JobState(id="j", url="https://facebook.com/someone", platform="facebook")
-    payload = job_manager._build_payload(st, {}, {"c_user": "1"})
+    payload = job_manager._build_payload(st, {}, {"c_user": "1"}, False)
     assert payload["options"]["sleep-request"] == [5.0, 11.0]
 
 
@@ -37,5 +37,5 @@ def test_explicit_job_option_beats_settings(job_manager, tmp_settings: Settings)
     tmp_settings.facebook_sleep_request_min = 5
     tmp_settings.facebook_sleep_request_max = 11
     st = JobState(id="j", url="https://facebook.com/someone", platform="facebook")
-    payload = job_manager._build_payload(st, {"sleep-request": [1.0, 2.0]}, {"c_user": "1"})
+    payload = job_manager._build_payload(st, {"sleep-request": [1.0, 2.0]}, {"c_user": "1"}, False)
     assert payload["options"]["sleep-request"] == [1.0, 2.0]

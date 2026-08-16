@@ -142,3 +142,83 @@ def test_returns_call_tree() -> None:
     calls = config_builder.apply(_ig(), fake)
     assert calls == fake.calls
     assert len(calls) >= 6
+
+
+# ----------------------------------------------------------------- anonymous (cookie-free) mode
+
+
+def test_anonymous_instagram_sends_no_cookies_and_switches_to_graphql() -> None:
+    """Logged-out, IG's REST /api/v1/* endpoints mostly 401; GraphQL is the path that answers."""
+    fake = FakeConfig()
+    config_builder.apply(_ig(anonymous=True, cookies=None), fake)
+    d = fake.as_dict()
+    # None is falsy, so gallery-dl's `if cookies := self.config("cookies")` guard no-ops.
+    assert d[(("extractor", "instagram"), "cookies")] is None
+    assert d[(("extractor", "instagram"), "api")] == "graphql"
+
+
+def test_anonymous_instagram_strips_auth_only_include() -> None:
+    """stories/highlights abort the whole extraction logged-out — not merely come back empty."""
+    fake = FakeConfig()
+    config_builder.apply(
+        _ig(anonymous=True, cookies=None, options={"include": "posts,stories,reels,highlights"}),
+        fake,
+    )
+    assert fake.as_dict()[(("extractor", "instagram"), "include")] == "posts,reels"
+
+
+def test_anonymous_instagram_include_of_only_auth_categories_falls_back() -> None:
+    fake = FakeConfig()
+    config_builder.apply(
+        _ig(anonymous=True, cookies=None, options={"include": "stories,highlights"}), fake
+    )
+    assert fake.as_dict()[(("extractor", "instagram"), "include")] == "posts"
+
+
+def test_anonymous_avatar_append_uses_the_filtered_include() -> None:
+    """The avatar block appends to the RESOLVED include; re-deriving it would undo the filtering."""
+    fake = FakeConfig()
+    config_builder.apply(
+        _ig(
+            anonymous=True,
+            cookies=None,
+            options={"include": "posts,stories", "include_avatar": True},
+        ),
+        fake,
+    )
+    assert fake.as_dict()[(("extractor", "instagram"), "include")] == "posts,avatar"
+
+
+def test_anonymous_instagram_explicit_api_option_wins() -> None:
+    fake = FakeConfig()
+    config_builder.apply(_ig(anonymous=True, cookies=None, options={"api": "rest"}), fake)
+    assert fake.as_dict()[(("extractor", "instagram"), "api")] == "rest"
+
+
+def test_cookied_instagram_gets_no_api_override() -> None:
+    """The tuning is anonymous-only: a cookied job keeps gallery-dl's own default API."""
+    fake = FakeConfig()
+    config_builder.apply(_ig(options={"include": "posts,stories"}), fake)
+    d = fake.as_dict()
+    assert (("extractor", "instagram"), "api") not in d
+    assert d[(("extractor", "instagram"), "include")] == "posts,stories"  # not filtered
+
+
+def test_anonymous_facebook_needs_no_cookies_and_no_tuning() -> None:
+    fake = FakeConfig()
+    config_builder.apply(_fb(anonymous=True, cookies=None), fake)
+    d = fake.as_dict()
+    assert d[(("extractor", "facebook"), "cookies")] is None
+    assert (("extractor", "facebook"), "api") not in d
+    # Facebook's include is never filtered — its categories all work logged-out on public content.
+    assert d[(("extractor", "facebook"), "include")] == "photos,albums"
+    # Pacing still applies: logged-out requests are rate-limited by IP instead of by account.
+    assert d[(("extractor", "facebook"), "sleep-request")] == [3.0, 8.0]
+
+
+def test_anonymous_still_rejects_an_unsupported_platform() -> None:
+    with pytest.raises(ValueError, match="unsupported platform"):
+        config_builder.apply(
+            {"platform": "twitter", "output_dir": "/out", "cookies": None, "anonymous": True},
+            FakeConfig(),
+        )

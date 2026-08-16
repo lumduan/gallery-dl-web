@@ -27,7 +27,7 @@ Both sides must honor it; the TS mirror lives in `frontend/src/lib/events.ts`.
 | `resumed`   | Operator resumed it; worker SIGCONTed after re-acquiring a slot (non-terminal) | `paused_for`, `downloaded`, `skipped` |
 | `error`     | A recoverable or fatal error                  | `message`, `kind`, `fatal` (bool)                       |
 | `completed` | **Terminal.** Worker exited status 0          | `exit_status`, `downloaded`, `skipped`, `reason`        |
-| `failed`    | **Terminal.** Worker exited non-zero, or retries exhausted (`reason`: `stalled` \| `no-progress` \| `rate-limited` \| `worker-crash` \| `missing-cookies` \| `downloads-dir-unwritable` \| a gallery-dl reason such as `dl-failed`) | `exit_status`, `reason`, `message`?, `resume_url`? |
+| `failed`    | **Terminal.** Worker exited non-zero, or retries exhausted (`reason`: `stalled` \| `no-progress` \| `rate-limited` \| `login-required` \| `worker-crash` \| `downloads-dir-unwritable` \| a gallery-dl reason such as `dl-failed`) | `exit_status`, `reason`, `message`?, `resume_url`? |
 | `cancelled` | **Terminal.** Operator stopped the job (`reason`: `cancelled`) | `reason`, `message`, `downloaded`, `skipped` |
 | `ping`      | sse-starlette keepalive (15 s)                | `{}`                                                    |
 | `end`       | Synthetic terminal sentinel from the SSE route | `{ "terminal": true }`                                |
@@ -65,7 +65,16 @@ Both sides must honor it; the TS mirror lives in `frontend/src/lib/events.ts`.
     `gallerydl/errors.py:detect_rate_limit`, and it overrides the reason on both the worker's own
     terminal event and a manager-synthesized stall. When the platform supplies a resume point
     (gallery-dl's `&setextract` URL for a Facebook set) it is passed through as `resume_url`.
-11. **Pause is a real process suspension**, driven by `POST /api/jobs/{id}/pause`. The manager
+11. **A job with no cookies runs anonymously rather than being refused.** There is no
+    `missing-cookies` reason — it was retired. gallery-dl reaches public content logged-out, so the
+    manager falls back to an anonymous run (and an operator can force one with `options.anonymous`
+    even when cookies *are* stored). If the content turns out to need a session, the failure says
+    so: stderr matching gallery-dl's `AuthRequired` wording is promoted to `reason: login-required`
+    with a plain-language `message` pointing at Settings, by
+    `gallerydl/errors.py:detect_login_wall`. A **rate limit is classified first** — Facebook's block
+    page carries login-ish wording, and there the correct advice is to wait, not to re-export
+    cookies. `JobSummary.anonymous` reports which mode a job actually ran in.
+12. **Pause is a real process suspension**, driven by `POST /api/jobs/{id}/pause`. The manager
     SIGSTOPs the worker, so gallery-dl keeps its place in the profile walk and no `heartbeat`
     arrives until it resumes. The concurrency slot is handed back — that is the point, a waiting
     profile starts immediately — and re-acquired on resume, so a resumed job can legitimately sit

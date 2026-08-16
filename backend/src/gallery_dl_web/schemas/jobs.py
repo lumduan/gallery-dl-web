@@ -11,7 +11,12 @@ class JobCreateRequest(BaseModel):
         default=None, description="Override platform; auto-detected from the URL if omitted."
     )
     options: dict[str, Any] | None = Field(
-        default=None, description="gallery-dl options (include, videos, directory, filename, ...)."
+        default=None,
+        description=(
+            "gallery-dl options (include, videos, directory, filename, api, ...), plus "
+            "'anonymous': true to run logged-out even when cookies are stored. With no cookies "
+            "stored for the platform, anonymous mode is used automatically."
+        ),
     )
 
 
@@ -27,6 +32,8 @@ class JobSummary(BaseModel):
     # Profile display name for the queue UI: URL-derived at creation, replaced by gallery-dl's
     # actual folder name once a file lands. None for single-post URLs.
     profile: str | None = None
+    # Ran logged-out (operator opt-in, or no cookies stored for the platform).
+    anonymous: bool = False
     status: str
     created_at: float
     started_at: float | None = None

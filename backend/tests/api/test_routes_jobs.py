@@ -178,17 +178,33 @@ async def test_zip_no_files_404(app: FastAPI, cookie_store, fake_spawn, monkeypa
     assert r.status_code == 404
 
 
-async def test_missing_cookies_via_http(app: FastAPI) -> None:
-    """No cookies set -> job reaches a failed terminal state."""
+async def test_no_cookies_runs_anonymously_via_http(app: FastAPI) -> None:
+    """No cookies set -> the job runs logged-out and says so, instead of being refused."""
     mgr = app.state.job_manager
     jid = await mgr.create_job("https://instagram.com/p/x/", "instagram")
     await mgr.wait_for(jid)
     async with await _client(app) as client:
         r = await client.get(f"/api/jobs/{jid}")
     body = r.json()
-    assert body["status"] == "failed"
-    assert body["final_summary"]["reason"] == "missing-cookies"
+    assert body["status"] == "completed"
+    assert body["anonymous"] is True
     # Avoid an unawaited-task warning in the loop teardown.
+    await asyncio.sleep(0)
+
+
+async def test_anonymous_option_accepted_over_http(app: FastAPI, cookie_store) -> None:
+    """`options.anonymous` rides the free-form options dict — no request-schema change."""
+    cookie_store.update(ig_sessionid="SID")
+    async with await _client(app) as client:
+        r = await client.post(
+            "/api/jobs",
+            json={"url": "https://instagram.com/p/x/", "options": {"anonymous": True}},
+        )
+        assert r.status_code == 202
+        jid = r.json()["job_id"]
+        await app.state.job_manager.wait_for(jid)
+        body = (await client.get(f"/api/jobs/{jid}")).json()
+    assert body["anonymous"] is True
     await asyncio.sleep(0)
 
 
