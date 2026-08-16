@@ -14,7 +14,7 @@ flowchart TD
     D1["D1 · Operator gets cookies<br/>DONE"] --> P4
     P4 --> P5["5 · Queue control<br/>pause / resume / stop<br/>DONE — v0.2.0"]
     P3 --> P6["6 · Theming<br/>light / dark / system<br/>DONE — v0.3.0"]
-    P2 --> P7["7 · Anonymous mode<br/>cookie-free public downloads<br/>DONE — untagged"]
+    P2 --> P7["7 · Anonymous mode<br/>cookie-free public downloads<br/>DONE — v0.4.0"]
     P3 --> P7
 
     classDef done     fill:#d4f4dd,stroke:#2d8a4e,color:#1a5c33
@@ -39,17 +39,17 @@ flowchart TD
 | **4 · Integrate and ship** | ✅ DONE | `docker-compose` (dev + prod + host-dir overlay); ghcr publish workflow; **live E2E verified** (real cookies, 1423 files across 3 profiles); **`v0.1.0` tagged 2026-07-23** → first ghcr publish | — |
 | **5 · Queue control** | ✅ DONE | `/queue` tab listing active + recent jobs; per-job **pause (SIGSTOP + slot release) / resume (SIGCONT) / stop (terminal `cancelled`)**; stop reconciles the profile's `metadata.json`; **`v0.2.0` tagged 2026-07-23** | — |
 | **6 · Theming** | ✅ DONE | **System / Light / Dark** from the navbar menu or **Settings → Appearance**; System follows the OS live via DaisyUI's `--prefersdark`, an explicit choice persists in `localStorage` and is applied pre-paint by an inline `<head>` script. Removed the create-next-app boilerplate that had the app hard-locked to light; **`v0.3.0` tagged 2026-07-24** | — |
-| **7 · Anonymous mode** | ✅ DONE (untagged) | Cookies are now **optional**: no cookies stored → the job runs logged-out instead of being refused, and `options.anonymous` forces that even when cookies exist. Anonymous IG switches to gallery-dl's `graphql` API and drops auth-only `include` categories; a login wall is classified as `reason: login-required` instead of a traceback. `missing-cookies` retired from the event contract. Five CI gates green (**90.4%** coverage); **live E2E 2026-08-16** — 9 real files off a public FB page with zero cookies | — |
+| **7 · Anonymous mode** | ✅ DONE | Cookies are now **optional**: no cookies stored → the job runs logged-out instead of being refused, and `options.anonymous` forces that even when cookies exist. Anonymous IG switches to gallery-dl's `graphql` API and drops auth-only `include` categories; a login wall is classified as `reason: login-required` instead of a traceback. `missing-cookies` retired from the event contract. Five CI gates green (**90.4%** coverage); **live E2E 2026-08-16** — 9 real files off a public FB page with zero cookies; **`v0.4.0` tagged 2026-08-16** | — |
 | **D1 · Operator cookies** | ✅ DONE | Real IG `sessionid` + FB cookies in use; live downloads confirmed 2026-07-23 | — |
 
-> **Phases 1–6 are complete and the current release is `v0.3.1`** (`v0.1.0` shipped phase 4,
-> `v0.2.0` phase 5, `v0.3.0` phase 6). Live E2E passes against real Instagram and Facebook profiles,
-> and both images publish to ghcr on tag. Note that Facebook rate-limits an account after a few
-> hundred images in one run ("temporarily blocked from viewing images"); that is a platform limit,
-> not a defect, and the job reports it verbatim.
+> **All phases are complete; the current release is `v0.4.0`** (`v0.1.0` shipped phase 4, `v0.2.0`
+> phase 5, `v0.3.0` phase 6, `v0.4.0` phase 7). Live E2E passes against real Instagram and Facebook
+> profiles, and both images publish to ghcr on tag. Note that Facebook rate-limits an account after a
+> few hundred images in one run ("temporarily blocked from viewing images"); that is a platform
+> limit, not a defect, and the job reports it verbatim.
 >
-> **Phase 7 (anonymous mode) is complete but unreleased** — no tag yet. Live-verified 2026-08-16:
-> a public Facebook page downloaded 9 real images with no cookies stored at all.
+> **Phase 7 (anonymous mode) shipped in `v0.4.0`.** Live-verified 2026-08-16: a public Facebook page
+> downloaded 9 real images with no cookies stored at all.
 >
 > ⚠️ **Anonymous Instagram is materially weaker than anonymous Facebook, and that is a platform
 > limit, not a defect.** In the same live run Instagram answered the logged-out GraphQL request with
@@ -176,7 +176,7 @@ dead code. Neither was visible while the app was light-only.
 - [x] tag `v0.3.1` (2026-07-24) → the Settings → Appearance card, a second surface for the same
       preference; patch rather than minor because nothing about the mechanism changed
 
-### 7 · Anonymous mode — ✅ DONE (untagged)
+### 7 · Anonymous mode — ✅ DONE
 Cookies were mandatory at three layers; that framing was wrong for public content. gallery-dl 1.32.7
 does support logged-out extraction — `InstagramExtractor.login()` sets `_logged_in = False` and the
 extractors branch on it, Facebook declares no `cookies_names` at all, and `_init_cookies` is guarded
@@ -215,7 +215,8 @@ by `if cookies := self.config("cookies")`, so an absent cookie is a no-op rather
         error text a platform *actually* returns is not the text its client library defines.
       - UI verified headless in light and dark: checkbox, the "no cookies stored → will run
         anonymously" hint, `anonymous` badges, and the `login-required` alert.
-- [ ] release tag (`v0.4.0`)
+- [x] tag `v0.4.0` (2026-08-16) → ghcr publish of
+      `ghcr.io/lumduan/gallery-dl-web/{backend,frontend}:{latest,v0.4.0}`
 
 ### D1 · Operator cookies — ✅ DONE
 - **Primary (new): browser extension** — load `extension/` unpacked, set the server URL, click
