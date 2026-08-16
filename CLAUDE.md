@@ -146,6 +146,24 @@ matches gallery-dl's own `AuthRequired` wording and `_annotate_failure` promotes
 reads login-ish, and there the right advice is "wait", not "re-export your cookies" — retrying
 extends the block. Keep that order.
 
+**Match the text the platform actually returns, not the text gallery-dl's source defines.** The
+first version of that classifier matched only the `AuthRequired` prose and missed the most common
+real failure. Instagram never emits the prose: an anonymous profile job dies on a urllib3 debug
+line reading `… HTTP/1.1" 401 42` — status then *content length*, the word "Unauthorized" nowhere —
+and Instagram also refuses with HTTP **200** plus `"require_login":true` in the body. Both are
+matched now. Note the 401 reaches stderr at all only because `output.initialize_logging` sets the
+root logger to `NOTSET`, so the worker's own `basicConfig` handler prints gallery-dl's debug
+records too; that is load-bearing for the match, and there is a second, independent rule so the
+classification survives if it ever changes.
+
+**`detect_login_wall` takes `anonymous`, because identical stderr means different things.**
+gallery-dl's `user_by_screen_name` tries each `user-strategy`, swallows every real exception into a
+debug line, and raises one generic `NotFoundError: Requested user could not be found` — so an auth
+wall and a deleted account are textually identical. With no session the ambiguity resolves (every
+anonymous lookup path is walled: topsearch 401, and the logged-out profile page no longer embeds
+`"profile_id"`), so that text counts as a login wall *only* when `anonymous` is set. With cookies it
+stays unmatched, since sending that operator to Settings would be wrong.
+
 **Tests must never spawn a real worker, and the autouse `_no_real_spawn` fixture is what guarantees
 it.** Before anonymous mode there was an accidental guard — a cookie-less job failed before
 reaching `spawn_worker` — so tests could create jobs without patching anything. That is gone by

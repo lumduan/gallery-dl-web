@@ -59,14 +59,34 @@ _RESUME_URL_RE = re.compile(r"https?://\S*setextract\S*")
 # unambiguously an auth failure, and "add or refresh cookies" is the right advice whether the job
 # ran anonymously or with a stale session. 403 is deliberately NOT matched: platforms serve it for
 # blocks too, where the correct advice is to wait. A bare "401" is also not enough — it matches
-# media ids and file counts — so the word "Unauthorized" has to be adjacent.
+# media ids and file counts — so it has to be anchored (see the urllib3 form below).
 _LOGIN_WALL_RE = re.compile(
     r"you must be logged in"
     r"|authenticated cookies needed"
     r"|account credentials required"
     r"|this content isn't available right now"
     r"|401 unauthorized"
+    # urllib3's connectionpool debug line, which is how a 401 usually actually reaches us:
+    #   ...:443 "GET /web/search/topsearch/?query=x HTTP/1.1" 401 42
+    # Note it prints the status followed by the CONTENT LENGTH — there is no word "Unauthorized"
+    # anywhere on the line, which is exactly why the prose-only patterns missed a real IG failure.
+    # Anchoring on the closing quote of the HTTP version keeps it off ids and byte counts.
+    r'|HTTP/[\d.]+"\s+401\b'
+    # Instagram refuses with HTTP 200 and {"require_login": true} in the body — a 200-shaped wall.
+    r"|\brequire_login\b"
     r"|\blogin_required\b",
+    re.I,
+)
+
+# Matched ONLY when the job ran anonymously. gallery-dl's `user_by_screen_name` tries each
+# `user-strategy` in turn, swallows every real exception into a debug line, and then raises one
+# generic NotFoundError — so an auth wall and a genuinely deleted account produce identical text.
+# With no session that ambiguity resolves: every anonymous username-lookup path is walled
+# (topsearch 401; the logged-out profile page no longer embeds `"profile_id"`), so a failed
+# resolution means "needs cookies", not "no such user". With cookies it really can be a dead
+# account, so this stays out of the unconditional set.
+_ANON_LOGIN_WALL_RE = re.compile(
+    r"requested user could not be found",
     re.I,
 )
 
@@ -109,6 +129,13 @@ def detect_rate_limit(stderr_lines: Iterable[str]) -> RateLimit | None:
     return RateLimit(message=hit, resume_url=resume)
 
 
-def detect_login_wall(stderr_lines: Iterable[str]) -> bool:
-    """True if the worker's stderr shows gallery-dl refusing for want of a logged-in session."""
-    return any(_LOGIN_WALL_RE.search(line) for line in stderr_lines)
+def detect_login_wall(stderr_lines: Iterable[str], *, anonymous: bool = False) -> bool:
+    """True if the worker's stderr shows gallery-dl refusing for want of a logged-in session.
+
+    ``anonymous`` widens the match to text that only means "auth wall" when there was no session
+    to begin with — see ``_ANON_LOGIN_WALL_RE``.
+    """
+    lines = list(stderr_lines)
+    if any(_LOGIN_WALL_RE.search(line) for line in lines):
+        return True
+    return anonymous and any(_ANON_LOGIN_WALL_RE.search(line) for line in lines)
