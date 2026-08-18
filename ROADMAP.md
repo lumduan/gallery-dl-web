@@ -16,7 +16,7 @@ flowchart TD
     P3 --> P6["6 · Theming<br/>light / dark / system<br/>DONE — v0.3.0"]
     P2 --> P7["7 · Anonymous mode<br/>cookie-free public downloads<br/>DONE — v0.4.0"]
     P3 --> P7
-    P2 --> P8["8 · Adaptive pacing<br/>Facebook speed + configurable wait<br/>IN PROGRESS"]
+    P2 --> P8["8 · Adaptive pacing<br/>Facebook speed + configurable wait<br/>DONE — v0.5.0"]
     P5 --> P8
 
     classDef done     fill:#d4f4dd,stroke:#2d8a4e,color:#1a5c33
@@ -31,7 +31,7 @@ flowchart TD
     class P6 done
     class D1 done
     class P7 done
-    class P8 active
+    class P8 done
 ```
 
 | Phase | Status | What it is | Blocker |
@@ -43,15 +43,19 @@ flowchart TD
 | **5 · Queue control** | ✅ DONE | `/queue` tab listing active + recent jobs; per-job **pause (SIGSTOP + slot release) / resume (SIGCONT) / stop (terminal `cancelled`)**; stop reconciles the profile's `metadata.json`; **`v0.2.0` tagged 2026-07-23** | — |
 | **6 · Theming** | ✅ DONE | **System / Light / Dark** from the navbar menu or **Settings → Appearance**; System follows the OS live via DaisyUI's `--prefersdark`, an explicit choice persists in `localStorage` and is applied pre-paint by an inline `<head>` script. Removed the create-next-app boilerplate that had the app hard-locked to light; **`v0.3.0` tagged 2026-07-24** | — |
 | **7 · Anonymous mode** | ✅ DONE | Cookies are now **optional**: no cookies stored → the job runs logged-out instead of being refused, and `options.anonymous` forces that even when cookies exist. Anonymous IG switches to gallery-dl's `graphql` API and drops auth-only `include` categories; a login wall is classified as `reason: login-required` instead of a traceback. `missing-cookies` retired from the event contract. Five CI gates green (**90.4%** coverage); **live E2E 2026-08-16** — 9 real files off a public FB page with zero cookies; **`v0.4.0` tagged 2026-08-16** | — |
-| **8 · Adaptive pacing** | 🚧 IN PROGRESS | Facebook was ~5.5 s of sleep **per image** (one HTML page per photo) against Instagram's ~0.3 s (~30 posts per request). Pacing is now **adaptive**: start at a floor, back off only on evidence, and raise the floor as a run gets long. Configurable in three places — env, **Settings → Download pacing** (no restart), and per job. Facebook also drops `albums` from the default `include`, gains an opt-in *quick update*, and bounds gallery-dl's 122 s fallback stall | Live throughput measurement on a real profile |
+| **8 · Adaptive pacing** | ✅ DONE | Facebook was ~5.5 s of sleep **per image** (one HTML page per photo) against Instagram's ~0.3 s (~30 posts per request). Pacing is now **adaptive**: start at a floor, back off only on evidence, and raise the floor as a run gets long. Configurable in three places — env, **Settings → Download pacing** (no restart), and per job. Facebook also drops `albums` from the default `include`, gains an opt-in *quick update*, and bounds gallery-dl's 122 s fallback stall. Live-verified: the same job slept **4.68 s**/request on `fixed 3-8` and **1.01 s** on `adaptive`. Five CI gates green (**91.1%** coverage); **`v0.5.0` tagged 2026-08-18** | — |
 | **D1 · Operator cookies** | ✅ DONE | Real IG `sessionid` + FB cookies in use; live downloads confirmed 2026-07-23 | — |
 
-> **Phase 8 (adaptive pacing) is in progress**; the last release is `v0.4.1`. Everything before it
-> is complete. (`v0.1.0` shipped phase 4, `v0.2.0`
-> phase 5, `v0.3.0` phase 6, `v0.4.0` phase 7). Live E2E passes against real Instagram and Facebook
-> profiles, and both images publish to ghcr on tag. Note that Facebook rate-limits an account after a
-> few hundred images in one run ("temporarily blocked from viewing images"); that is a platform
-> limit, not a defect, and the job reports it verbatim.
+> **All phases are complete; the current release is `v0.5.0`** (`v0.1.0` shipped phase 4, `v0.2.0`
+> phase 5, `v0.3.0` phase 6, `v0.4.0` phase 7, `v0.5.0` phase 8). Live E2E passes against real
+> Instagram and Facebook profiles, and both images publish to ghcr on tag. Note that Facebook
+> rate-limits an account after a few hundred images in one run ("temporarily blocked from viewing
+> images"); that is a platform limit, not a defect, and the job reports it verbatim — and since
+> `v0.5.0` the pacing floor climbs as a run gets long specifically to make reaching it less likely.
+>
+> **Phase 8 (adaptive pacing) shipped in `v0.5.0`.** Facebook's per-request sleep went from a fixed
+> 3-8 s to an adaptive 1 s floor; measured live, the same job slept 4.68 s per request before and
+> 1.01 s after.
 >
 > **Phase 7 (anonymous mode) shipped in `v0.4.0`.** Live-verified 2026-08-16: a public Facebook page
 > downloaded 9 real images with no cookies stored at all.
@@ -77,8 +81,10 @@ flowchart TD
 > 401. **The switch is still in the code and is a known open question**, deliberately left alone
 > rather than changed without a decision.
 >
-> Remaining backlog, unchanged: multi-account cookie storage, and resuming a blocked Facebook run
-> from gallery-dl's `&setextract` URL. (Job cancellation from the UI shipped in phase 5.)
+> Remaining backlog: multi-account cookie storage; resuming a blocked Facebook run from
+> gallery-dl's `&setextract` URL; and **measuring end-to-end images/minute on a real profile** —
+> phase 8 measured the per-request delay (4.68 s → 1.01 s) but never timed a full profile, which is
+> the number an operator actually feels. (Job cancellation from the UI shipped in phase 5.)
 
 ---
 
@@ -245,7 +251,7 @@ by `if cookies := self.config("cookies")`, so an absent cookie is a no-op rather
       ⇒ **The lesson worth keeping: match the text the platform actually returns, not the text the
       client library defines.** The prose patterns were written from the source and looked right.
 
-### 8 · Adaptive pacing — 🚧 IN PROGRESS
+### 8 · Adaptive pacing — ✅ DONE
 Prompted directly by an operator report: *Facebook download time is a problem, it is too slow.*
 
 The cause was not that Facebook throttles harder — it is that **gallery-dl fetches one full
@@ -289,9 +295,12 @@ after Facebook blocked an account at ~767 images.
       `fixed 3-8` slept **4.68 s** per request, `adaptive` slept **1.01 s**. UI driven headless in
       light and dark: the Settings card, its mode-dependent labels, the custom badge and reset, and
       the platform-aware advanced block, with no console errors.
-- [ ] **Remaining: throughput on a real profile.** The per-request delay is measured; images/minute
-      end-to-end on a large public page is not, and that is the number the operator actually cares
-      about.
+- [x] tag `v0.5.0` (2026-08-18) → ghcr publish of
+      `ghcr.io/lumduan/gallery-dl-web/{backend,frontend}:{latest,v0.5.0}`
+      ➡️ **Not measured, and moved to the backlog rather than left as a phase blocker:**
+      end-to-end **images/minute on a real profile**. The per-request delay is measured and is the
+      thing this phase changed; total throughput also depends on page size and link speed, and was
+      never timed before the change either, so there is no baseline to compare against.
 
 ### D1 · Operator cookies — ✅ DONE
 - **Primary (new): browser extension** — load `extension/` unpacked, set the server URL, click
