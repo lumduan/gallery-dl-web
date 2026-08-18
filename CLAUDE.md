@@ -55,6 +55,8 @@ container. Enable both together in `.env`:
 - `backend/src/gallery_dl_web/gallerydl/worker.py` — subprocess entry; the load-bearing contract.
 - `backend/src/gallery_dl_web/jobs/manager.py` — asyncio orchestrator (spawn/fan-out/replay/stall-retry/GC).
 - `backend/src/gallery_dl_web/gallerydl/config_builder.py` — pure payload→`config.set` translator.
+- `backend/src/gallery_dl_web/gallerydl/pacing.py` — the adaptive request pacer + its three patches.
+- `backend/src/gallery_dl_web/pacing/store.py` — operator pacing overrides (`<data_dir>/pacing.json`).
 - `backend/src/gallery_dl_web/api/routes_jobs.py` — SSE endpoint + zip.
 - `backend/src/gallery_dl_web/profiles/store.py` — per-profile `metadata.json` reconciliation.
 - `frontend/src/app/jobs/[id]/page.tsx` + `components/JobProgress.tsx` — SSE consumer.
@@ -164,8 +166,14 @@ anonymous lookup path is walled: topsearch 401, and the logged-out profile page 
 `"profile_id"`), so that text counts as a login wall *only* when `anonymous` is set. With cookies it
 stays unmatched, since sending that operator to Settings would be wrong.
 
-**Tests must never spawn a real worker, and the autouse `_no_real_spawn` fixture is what guarantees
-it.** Before anonymous mode there was an accidental guard — a cookie-less job failed before
+**Tests must never spawn a real worker, never make a real request, and never leave gallery-dl
+patched.** `tests/conftest.py`'s autouse `_no_real_spawn` covers the manager; `tests/gallerydl/conftest.py`
+adds the worker-side siblings, because that code runs *in-process*: `_no_real_http` makes
+`HTTPAdapter.send` raise, and `_pristine_extractor` asserts after every test that `Extractor.request`,
+`_init_session` and the root log handlers were restored — `pacing.install` mutates class-level state
+that would otherwise pace and log every later test.
+
+On `_no_real_spawn` specifically: Before anonymous mode there was an accidental guard — a cookie-less job failed before
 reaching `spawn_worker` — so tests could create jobs without patching anything. That is gone by
 design, so `tests/conftest.py` patches a harmless default; `fake_spawn`/`capture_spawn` still
 override it.
@@ -191,13 +199,70 @@ That is why `archive_path` is stored in `metadata.json` — deletion needs it.
 **Every filesystem path from a request goes through `api/paths.py:resolve_within`.** It is the single
 traversal guard for `/api/files`, profile files, thumbnails, and zips.
 
-**Both platforms are rate-limited and both are paced** via gallery-dl's `sleep-request`
-(`<PLATFORM>_SLEEP_REQUEST_MIN/MAX`, injected into the job payload by `_build_payload`, overridable
-per-job through the API's `options`). Facebook blocked an account after ~767 images fetched with no
-delay. Raise the values after a block; a block costs far more time than the delay. `MAX=0` disables.
+**Pacing is adaptive, and the shape of the problem is asymmetric.** Instagram gets ~30 posts per
+JSON request, so a delay amortizes away; Facebook fetches one full 1-3 MB HTML page *per photo*
+(`facebook.py:extract_set` walks a singly-linked list of ids — not parallelizable, no cursor), so
+it pays the delay once per image. A fixed delay large enough to be safe on a long Facebook run
+therefore makes every short one ~5x slower than it needs to be.
 
-**Adding a `Settings` field means touching four places**: `config.py`, `.env.example`, and the
-`environment:` block of *both* compose files (env vars are uppercase field names).
+`gallerydl/pacing.py` owns this. Three things worth knowing before touching it:
+
+- **It hands gallery-dl a delay; it never sleeps itself.** `Extractor.request` computes
+  `interval - (now - request_timestamp)`, and image downloads bypass it entirely, so the delay is a
+  floor on request *spacing*, not an addend — at a 1 s floor against a 1-2 s page fetch the added
+  sleep is usually zero. `next_delay` must stay a **pure read**: the retry loop calls it again per
+  retry to floor its own backoff (`seconds = max(retry, request, 429)`), so a state-advancing
+  getter would corrupt the model.
+- **`install()` patches classes, not an instance**, for the same reason the progress hooks are a
+  postprocessor: profile extraction spawns child jobs with their own extractors and they share one
+  request budget. It wraps `Extractor.request` (inject the delay, classify raised errors), wraps
+  `Extractor._init_session` to attach a **`requests` response hook** — that hook, not the return
+  value, is where responses are judged, because only it sees intermediate retries, redirect hops
+  and image downloads (a CDN 429 is invisible otherwise) — and adds a root `logging.Handler`.
+- **That log handler is not optional: on Facebook a rate limit is an HTTP 200.** A soft block is a
+  photo page whose image URL will not parse, and the only in-band evidence is gallery-dl's
+  `"Failed to find photo download URL"` warning. It reuses `errors.py:detect_rate_limit`, so the
+  live sensor and the reported failure reason cannot drift apart.
+
+**The volume ramp, not the reactive back-off, is what protects a long run.** A hard block is
+terminal by design — `facebook.py:photo_page_request_wrapper` raises `AbortExtraction` the moment
+it sees the block page — so backing off afterwards achieves nothing. Instead the *floor* rises with
+cumulative requests (`1 s -> ~4.8 s by request 767`, the point at which a real account was blocked,
+8 s ceiling at ~1400). Short profiles stay fast; long ones end up more cautious than the old fixed
+3-8 s.
+
+**`MIN`/`MAX` change meaning with the mode**: `adaptive` = floor + back-off ceiling, `fixed` = a
+random range per request (the old behaviour). Resolution is per-job `options.pacing` -> the runtime
+store (`<data_dir>/pacing.json`, editable in Settings with no restart) -> env `Settings` ->
+`_PLATFORM_DEFAULTS`. Like `anonymous`, `pacing` is a **top-level payload key** popped out of
+`options` by `_run_job`, because `config_builder` only reads keys it knows about.
+
+**The pacing ceiling is coupled to the stall detector** — `_resolve_pacing` clamps it to
+`stall_cap_seconds / 4`, and `pacing.HARD_MAX_DELAY` clamps a hand-written payload — because a job
+legitimately backed off past the progress deadline gets killed as stalled, and a Facebook retry
+re-walks the linked list from the top. The binding case is not steady state but the fallback stall
+below.
+
+**A `pacing` event must not reset the progress clock** (sleeping is the opposite of progress), and
+it is emitted **on change only**, >=0.25 s apart, at most every 5 s, capped at 200 per job:
+`JobState.events` is a `deque(maxlen=5000)` that `media_paths()` and the zip route read `file`
+events back out of, so a chatty event type silently truncates a job's downloads. Comparing against
+the last *reported* delay rather than the last one is deliberate — the ramp moves in millisecond
+steps and would otherwise climb from 1 s to 8 s in total silence.
+
+**Two Facebook defaults exist purely to bound wall-clock, and both look like gallery-dl tuning
+knobs rather than what they are.** `include` is `photos` alone (not `photos,albums`): an album
+re-walks photos the main set already covered, and `DownloadJob.handle_url` checks the archive only
+*after* fetching the page, so the duplicate walk costs full page fetches for no new files.
+And `fallback-retries` is `1` with `sleep-429` **shaped** as `"exponential:2:0:60=15"` — at
+gallery-dl's defaults an unparseable photo costs `2 x (60 + 1) s` of dead sleep emitting no
+`prepare` or `file`, so two consecutive ones exceed `stall_floor_seconds` on their own and get a
+healthy job killed. Never *flatten* `sleep-429`: `downloader/http.py` inherits
+`extractor._interval_429` for CDN 429s, so a small constant is how a soft block becomes a hard one.
+
+**Adding a `Settings` field means touching five places**: `config.py`, `.env.example`,
+`backend/.env.example` (used when the backend runs standalone), and the `environment:` block of
+*both* compose files (env vars are uppercase field names).
 
 **`/health` is at the backend root, not under `/api`.** The frontend serves its own `/api/health`
 locally (Dockerfile HEALTHCHECK); the catch-all proxy only forwards `/api/*`.
@@ -256,4 +321,4 @@ frontend code.
 ## Docs to keep in sync
 `README.md` (quickstart + host-dir/NAS setup + rate limits), `ROADMAP.md` (phase status),
 `docs/event-contract.md` + `frontend/src/lib/events.ts` (the SSE schema — always both), and
-`.env.example` + both compose files (any new `Settings` field).
+`.env.example` + `backend/.env.example` + both compose files (any new `Settings` field).

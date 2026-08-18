@@ -1,4 +1,5 @@
 import { CookieForm } from "@/components/CookieForm";
+import { PacingSetting } from "@/components/PacingSetting";
 import { ThemeSetting } from "@/components/ThemeSetting";
 
 export default function SettingsPage() {
@@ -37,6 +38,10 @@ export default function SettingsPage() {
       <div className="divider text-xs text-base-content/50">or paste manually</div>
 
       <CookieForm />
+
+      <div className="divider text-xs text-base-content/50">downloads</div>
+
+      <PacingSetting />
 
       <div className="divider text-xs text-base-content/50">appearance</div>
 

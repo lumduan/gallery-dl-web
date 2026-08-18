@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import io
 import json
 from typing import Any
@@ -215,3 +216,106 @@ def test_main_bad_stdin(capsys: pytest.CaptureFixture[str]) -> None:
     assert rc == 2
     evs = _events(capsys)
     assert evs[-1]["reason"] == "bad-stdin"
+
+
+# --- adaptive pacing ------------------------------------------------------------------------------
+
+
+def _pacing(**over: Any) -> dict[str, Any]:
+    base = {"mode": "adaptive", "min": 1.0, "max": 30.0}
+    base.update(over)
+    return base
+
+
+def test_adaptive_pacing_is_live_during_the_job_and_removed_after(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """It must be installed before DownloadJob (Job.run builds the session the hook attaches to)
+    and torn down afterwards — Extractor is class-level state shared by the whole process."""
+    from gallery_dl.extractor.common import Extractor
+
+    _patch_common(monkeypatch)
+    pristine = Extractor.request
+    seen: list[Any] = []
+
+    def _job(url: str) -> Any:  # noqa: ARG001
+        seen.append(Extractor.request)
+        return _StatusJob(0)
+
+    monkeypatch.setattr(worker.job, "DownloadJob", _job)
+    worker.run(_payload(pacing=_pacing()))
+    assert seen[0] is not pristine
+    assert Extractor.request is pristine
+    assert [e["type"] for e in _events(capsys)] == ["started", "completed"]
+
+
+def test_fixed_mode_leaves_gallery_dl_pacing_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    from gallery_dl.extractor.common import Extractor
+
+    _patch_common(monkeypatch)
+    pristine = Extractor.request
+    seen: list[Any] = []
+    monkeypatch.setattr(
+        worker.job, "DownloadJob", lambda url: (seen.append(Extractor.request), _StatusJob(0))[1]
+    )
+    worker.run(_payload(pacing=_pacing(mode="fixed")))
+    assert seen[0] is pristine
+
+
+def test_pacing_is_removed_even_when_the_job_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    from gallery_dl.extractor.common import Extractor
+
+    _patch_common(monkeypatch)
+    pristine = Extractor.request
+
+    def _boom(url: str) -> Any:  # noqa: ARG001
+        raise RuntimeError("gallery-dl exploded")
+
+    monkeypatch.setattr(worker.job, "DownloadJob", _boom)
+    assert worker.run(_payload(pacing=_pacing())) == 2
+    assert Extractor.request is pristine
+
+
+def test_a_broken_pacing_block_degrades_to_fixed_instead_of_failing_the_job(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Pacing is an optimisation; a bug in it must never cost a download."""
+    _patch_common(monkeypatch)
+    monkeypatch.setattr(worker.job, "DownloadJob", lambda url: _StatusJob(0))
+    rc = worker.run(_payload(pacing={"mode": "adaptive", "min": "nonsense", "max": 30.0}))
+    assert rc == 0
+    assert [e["type"] for e in _events(capsys)] == ["started", "completed"]
+
+
+def test_pacing_events_reach_stdout_as_json_lines(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """stdout is the event channel — a pacing event has to be a well-formed line like any other."""
+    _patch_common(monkeypatch)
+
+    def _job(url: str) -> Any:  # noqa: ARG001
+        from gallery_dl.extractor.common import Extractor
+
+        # A bare Extractor is missing what the real request() reads; we only need the wrapper to
+        # run far enough to move the pacer, so let it fail inside and be classified.
+        with contextlib.suppress(Exception):
+            Extractor.request(object.__new__(Extractor), "https://x/")  # type: ignore[call-arg]
+        return _StatusJob(0)
+
+    monkeypatch.setattr(worker.job, "DownloadJob", _job)
+    worker.run(_payload(platform="facebook", pacing=_pacing(min=2.0)))
+    evs = _events(capsys)
+    paced = [e for e in evs if e["type"] == "pacing"]
+    assert paced, "the pacer moved but emitted nothing"
+    assert paced[0]["platform"] == "facebook"
+    assert set(paced[0]) == {
+        "type",
+        "platform",
+        "delay",
+        "previous",
+        "reason",
+        "requests",
+        "ts",
+        "job_id",
+    }
+    assert [e["type"] for e in evs][-1] == "completed"

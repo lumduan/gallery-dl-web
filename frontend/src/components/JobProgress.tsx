@@ -23,6 +23,10 @@ function describe(ev: JobEvent): string {
       } failed`;
     case "heartbeat":
       return `· still working (${Math.round(ev.elapsed ?? 0)}s)`;
+    case "pacing":
+      return `${PACING_ROUTINE.includes(ev.reason ?? "") ? "⏱" : "🐢"} pacing ${
+        ev.previous ?? 0
+      }s → ${ev.delay ?? 0}s (${ev.reason ?? "?"})`;
     case "stalled":
       return ev.phase === "warmup"
         ? `⏳ no files yet after ${Math.round(ev.threshold ?? 0)}s (attempt ${ev.attempt ?? 1})`
@@ -64,6 +68,9 @@ function StatusBadge({ status }: { status: string }) {
   return <span className={`badge ${map[status] ?? "badge-ghost"}`}>{status}</span>;
 }
 
+/** Pacing reasons that are the controller working normally, not the platform pushing back. */
+const PACING_ROUTINE = ["ramp", "recovered"];
+
 const TERMINAL_STATUSES = ["completed", "failed", "cancelled"];
 
 export function JobProgress({ jobId }: { jobId: string }) {
@@ -73,6 +80,7 @@ export function JobProgress({ jobId }: { jobId: string }) {
   const [counts, setCounts] = useState({ downloaded: 0, skipped: 0, failed: 0 });
   const [stall, setStall] = useState<string | null>(null);
   const [alive, setAlive] = useState<number | null>(null);
+  const [pacing, setPacing] = useState<JobEvent | null>(null);
   // The terminal event as it arrives on the stream — without this the failure alert below only
   // renders after a reload, because `summary` is fetched once at mount.
   const [terminalEvent, setTerminalEvent] = useState<JobEvent | null>(null);
@@ -103,6 +111,9 @@ export function JobProgress({ jobId }: { jobId: string }) {
       }
       if (ev.type === "heartbeat") {
         setAlive(ev.elapsed ?? null);
+      }
+      if (ev.type === "pacing") {
+        setPacing(ev);
       }
       if (ev.type === "stalled") {
         setStall(
@@ -163,6 +174,20 @@ export function JobProgress({ jobId }: { jobId: string }) {
           <div className="flex items-center justify-between gap-2">
             <h2 className="card-title truncate">Job {jobId.slice(0, 12)}…</h2>
             <div className="flex items-center gap-2">
+              {pacing !== null && !TERMINAL_STATUSES.includes(status) && (
+                <span
+                  className={`badge badge-sm ${
+                    PACING_ROUTINE.includes(pacing.reason ?? "") ? "badge-ghost" : "badge-warning"
+                  }`}
+                  title={
+                    PACING_ROUTINE.includes(pacing.reason ?? "")
+                      ? "Current delay between requests"
+                      : `Backed off — the platform pushed back (${pacing.reason})`
+                  }
+                >
+                  ⏱ {pacing.delay}s
+                </span>
+              )}
               {summary?.anonymous && (
                 <span
                   className="badge badge-ghost badge-sm"

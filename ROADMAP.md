@@ -16,6 +16,8 @@ flowchart TD
     P3 --> P6["6 · Theming<br/>light / dark / system<br/>DONE — v0.3.0"]
     P2 --> P7["7 · Anonymous mode<br/>cookie-free public downloads<br/>DONE — v0.4.0"]
     P3 --> P7
+    P2 --> P8["8 · Adaptive pacing<br/>Facebook speed + configurable wait<br/>IN PROGRESS"]
+    P5 --> P8
 
     classDef done     fill:#d4f4dd,stroke:#2d8a4e,color:#1a5c33
     classDef active   fill:#fff3cd,stroke:#cc9a06,color:#7a5c04
@@ -29,6 +31,7 @@ flowchart TD
     class P6 done
     class D1 done
     class P7 done
+    class P8 active
 ```
 
 | Phase | Status | What it is | Blocker |
@@ -40,9 +43,11 @@ flowchart TD
 | **5 · Queue control** | ✅ DONE | `/queue` tab listing active + recent jobs; per-job **pause (SIGSTOP + slot release) / resume (SIGCONT) / stop (terminal `cancelled`)**; stop reconciles the profile's `metadata.json`; **`v0.2.0` tagged 2026-07-23** | — |
 | **6 · Theming** | ✅ DONE | **System / Light / Dark** from the navbar menu or **Settings → Appearance**; System follows the OS live via DaisyUI's `--prefersdark`, an explicit choice persists in `localStorage` and is applied pre-paint by an inline `<head>` script. Removed the create-next-app boilerplate that had the app hard-locked to light; **`v0.3.0` tagged 2026-07-24** | — |
 | **7 · Anonymous mode** | ✅ DONE | Cookies are now **optional**: no cookies stored → the job runs logged-out instead of being refused, and `options.anonymous` forces that even when cookies exist. Anonymous IG switches to gallery-dl's `graphql` API and drops auth-only `include` categories; a login wall is classified as `reason: login-required` instead of a traceback. `missing-cookies` retired from the event contract. Five CI gates green (**90.4%** coverage); **live E2E 2026-08-16** — 9 real files off a public FB page with zero cookies; **`v0.4.0` tagged 2026-08-16** | — |
+| **8 · Adaptive pacing** | 🚧 IN PROGRESS | Facebook was ~5.5 s of sleep **per image** (one HTML page per photo) against Instagram's ~0.3 s (~30 posts per request). Pacing is now **adaptive**: start at a floor, back off only on evidence, and raise the floor as a run gets long. Configurable in three places — env, **Settings → Download pacing** (no restart), and per job. Facebook also drops `albums` from the default `include`, gains an opt-in *quick update*, and bounds gallery-dl's 122 s fallback stall | Live throughput measurement on a real profile |
 | **D1 · Operator cookies** | ✅ DONE | Real IG `sessionid` + FB cookies in use; live downloads confirmed 2026-07-23 | — |
 
-> **All phases are complete; the current release is `v0.4.1`** (`v0.1.0` shipped phase 4, `v0.2.0`
+> **Phase 8 (adaptive pacing) is in progress**; the last release is `v0.4.1`. Everything before it
+> is complete. (`v0.1.0` shipped phase 4, `v0.2.0`
 > phase 5, `v0.3.0` phase 6, `v0.4.0` phase 7). Live E2E passes against real Instagram and Facebook
 > profiles, and both images publish to ghcr on tag. Note that Facebook rate-limits an account after a
 > few hundred images in one run ("temporarily blocked from viewing images"); that is a platform
@@ -239,6 +244,54 @@ by `if cookies := self.config("cookies")`, so an absent cookie is a no-op rather
       session (with cookies it can be a genuinely deleted account).
       ⇒ **The lesson worth keeping: match the text the platform actually returns, not the text the
       client library defines.** The prose patterns were written from the source and looked right.
+
+### 8 · Adaptive pacing — 🚧 IN PROGRESS
+Prompted directly by an operator report: *Facebook download time is a problem, it is too slow.*
+
+The cause was not that Facebook throttles harder — it is that **gallery-dl fetches one full
+1-3 MB HTML page per photo** (`facebook.py:extract_set` walks a singly-linked list of ids, so it
+cannot be batched, cursored or parallelised), while Instagram gets ~30 posts from a single JSON
+request. The same `sleep-request` therefore cost Facebook **~5.5 s per image** and Instagram
+**~0.3 s**. gallery-dl itself ships Facebook with *no* pacing at all; the 3-8 s was ours, added
+after Facebook blocked an account at ~767 images.
+
+- [x] `gallerydl/pacing.py` — an adaptive pacer that hands gallery-dl a delay rather than sleeping
+      itself (gallery-dl already credits time spent working against the interval, so a 1 s floor
+      against a 1-2 s page fetch usually adds nothing at all).
+- [x] **Sensors where they can actually see.** A `requests` response hook rather than the return
+      value of `Extractor.request`, because only the hook sees intermediate retries, redirect hops
+      and image downloads — a CDN 429 was otherwise invisible. Plus a root log handler, because
+      **on Facebook a rate limit is an HTTP 200**: a soft block is a photo page whose image URL
+      will not parse, and gallery-dl's own warning is the only in-band evidence.
+- [x] **A volume ramp, which is the half that actually prevents a block.** A hard block is terminal
+      by design (`photo_page_request_wrapper` raises `AbortExtraction`), so reacting to one is
+      pointless. The floor instead rises with cumulative requests: 1 s → ~4.8 s by request 767,
+      8 s ceiling at ~1400. Short profiles stay fast; long ones end up *more* careful than the old
+      fixed 3-8 s ever was.
+- [x] Three config surfaces: `<PLATFORM>_PACING_MODE`/`_SLEEP_REQUEST_MIN`/`_MAX`,
+      **Settings → Download pacing** (a `pacing.json` store read at job-build time, so a
+      rate-limit response needs no restart), and per-job *Advanced options* on the form.
+      `MIN`/`MAX` change meaning with the mode; `fixed` restores the previous behaviour exactly.
+- [x] Two Facebook structural wins: `include` defaults to `photos` (an album re-walks pages the
+      main set already covered, and the archive is only consulted *after* the page is fetched), and
+      an opt-in **quick update** that stops after N consecutive already-downloaded files.
+- [x] Bounded the 122 s fallback stall (`fallback-retries: 1`, `sleep-429` **shaped** rather than
+      flattened — `downloader/http.py` inherits it for CDN 429s). Two consecutive unparseable
+      photos previously exceeded `stall_floor_seconds` on their own and got a healthy job killed.
+- [x] New `pacing` SSE event, emitted on change only and hard-capped, because `JobState.events` is
+      a bounded deque the zip route reads `file` events back out of.
+- [x] Four pre-existing bugs fixed on the way: `MAX=0` never actually disabled pacing; a stale
+      `backend/.env.example`; a `sleep_request` / `sleep-request` docstring mismatch; and
+      `errors.py` advice that adaptive pacing made obsolete.
+- [x] 242 backend tests at **91.1%** coverage; new `tests/gallerydl/conftest.py` guards that
+      worker-side tests never make a real request and never leave gallery-dl's `Extractor` patched.
+- [x] **Live verification** — the same job under both modes against a real Facebook URL:
+      `fixed 3-8` slept **4.68 s** per request, `adaptive` slept **1.01 s**. UI driven headless in
+      light and dark: the Settings card, its mode-dependent labels, the custom badge and reset, and
+      the platform-aware advanced block, with no console errors.
+- [ ] **Remaining: throughput on a real profile.** The per-request delay is measured; images/minute
+      end-to-end on a large public page is not, and that is the number the operator actually cares
+      about.
 
 ### D1 · Operator cookies — ✅ DONE
 - **Primary (new): browser extension** — load `extension/` unpacked, set the server URL, click

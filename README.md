@@ -53,7 +53,8 @@ What anonymous mode does *not* reach:
 > rather than dumping a traceback — but for Instagram, cookies remain the practical answer.
 
 Note that logged-out requests are rate-limited by **IP** rather than by account, so the
-`*_SLEEP_REQUEST_*` pacing below still matters — arguably more, since a block hits the whole host.
+[pacing](#rate-limits-speed-and-long-running-jobs) below still matters — arguably more, since a
+block hits the whole host.
 
 To reach everything else, provide your own logged-in cookies — there are two ways:
 
@@ -220,13 +221,50 @@ stored server-side, so two browsers can differ.
 The [browser extension](extension/README.md) popup has the same three modes in its header. It is a
 separate setting — an extension and a web page are different origins and cannot share storage.
 
-## Rate limits and long-running jobs
+## Rate limits, speed, and long-running jobs
 
-Both platforms throttle scraping, so requests are paced via gallery-dl's `sleep-request`:
-Instagram 6–12 s, Facebook 3–8 s (`INSTAGRAM_`/`FACEBOOK_SLEEP_REQUEST_MIN`/`MAX`). Facebook is the
-harsher one — with no delay it blocked an account after ~767 images in a single run. **If you get
-blocked, raise those values and wait before retrying**; a block costs far more time than the delay.
-Set `MAX=0` to disable pacing.
+Both platforms throttle scraping, but they need pacing in opposite shapes — and that, not the
+delay itself, is why Facebook used to be so much slower:
+
+| | HTTP requests per image | so a delay costs |
+|---|---|---|
+| **Instagram** | ~1 per **30** posts (one JSON page lists them all) | almost nothing per image |
+| **Facebook** | **1 per photo** — a full 1–3 MB HTML page each, walked strictly in order | the full delay, per image |
+
+So pacing is **adaptive by default**. A run starts at the floor and only slows down on evidence the
+platform is pushing back — a 429, a 403/503, a redirect to a login page, Facebook's block page, or
+gallery-dl's own warnings — then speeds back up after a clean streak. Separately, the floor **rises
+as a run gets long**, because that is when a block actually happens: the one ever observed came
+~767 images into a single Facebook run. A short profile stays fast; a thousand-image one ends up
+more careful than the old fixed delay was.
+
+Three places to change it, each overriding the one below:
+
+| Where | Scope | Takes effect |
+|---|---|---|
+| The download form's **Advanced options** | that job only | immediately |
+| **Settings → Download pacing** | every later job | immediately, no restart |
+| `<PLATFORM>_PACING_MODE` / `_SLEEP_REQUEST_MIN` / `_MAX` | every later job | on restart |
+
+`MIN`/`MAX` mean different things per mode: in `adaptive` they are the floor (and starting delay)
+and the back-off ceiling; in `fixed` they are the ends of a random range sampled per request, which
+is the pre-`v0.5.0` behaviour. Defaults are Facebook `adaptive 1–30 s` and Instagram
+`adaptive 4–30 s` — Instagram's floor is deliberately more cautious, since gallery-dl's own default
+there is 6–12 s and an Instagram session ban is expensive.
+
+**If you do get blocked, raise the floor and wait before retrying** — retrying immediately extends
+the block, and back-off can only reduce the chance of *reaching* one: gallery-dl ends the run the
+moment Facebook serves its block page.
+
+Two Facebook-specific speed notes:
+
+- **Albums are opt-in.** gallery-dl only checks whether a photo is already downloaded *after*
+  fetching its page, so also walking `albums` re-fetches pages the main photo walk already covered —
+  roughly double the time for very few extra files. Tick *Also walk albums* if you want it.
+- **Quick update** (*stop after N already-downloaded files*) makes a refresh cheap: Facebook lists
+  newest first, so it reaches the new photos immediately and would otherwise re-fetch every old page
+  just to skip it. Leave it off if a previous run was interrupted — it would stop before reaching
+  the part you never got.
 
 A job is guarded by two independent deadlines, because pacing makes silence normal:
 
@@ -234,7 +272,9 @@ A job is guarded by two independent deadlines, because pacing makes silence norm
   `STALL_LIVENESS_SECONDS` the process is wedged and is killed.
 - **progress** — no `prepare`/`file` event. Before the first one that's the *warm-up* budget
   (`STALL_WARMUP_SECONDS`, default 600 s), since gallery-dl is silent for minutes while walking a
-  profile; afterwards it adapts to the observed inter-file rate.
+  profile; afterwards it adapts to the observed inter-file rate. The pacing ceiling is clamped
+  against this: a job legitimately backed off past the progress deadline would be killed as
+  stalled while behaving exactly as designed.
 
 Re-running a profile is cheap: the per-profile gallery-dl archive means already-fetched files come
 back as `skipped`, so an interrupted or blocked run resumes where it stopped.

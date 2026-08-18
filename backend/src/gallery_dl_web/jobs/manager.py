@@ -26,7 +26,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
-from gallery_dl_web.config import Settings
+from gallery_dl_web.config import Settings, normalize_pacing
 from gallery_dl_web.cookies.store import CookieStore
 from gallery_dl_web.gallerydl.errors import (
     LOGIN_WALL_MESSAGE,
@@ -35,6 +35,7 @@ from gallery_dl_web.gallerydl.errors import (
 )
 from gallery_dl_web.jobs.models import JobState, JobStatus
 from gallery_dl_web.jobs.worker_runner import spawn_worker
+from gallery_dl_web.pacing.store import PacingStore
 from gallery_dl_web.profiles.store import ProfileStore
 from gallery_dl_web.profiles.urls import extract_username
 
@@ -116,10 +117,16 @@ class JobManager:
         settings: Settings,
         cookie_store: CookieStore,
         profile_store: ProfileStore | None = None,
+        pacing_store: PacingStore | None = None,
     ) -> None:
         self._settings = settings
         self._cookies = cookie_store
         self._profiles = profile_store
+        # Optional so a manager can be constructed bare (tests, direct use); without one the env
+        # Settings are the only pacing source, which is the pre-override behaviour.
+        self._pacing_store = pacing_store or PacingStore(
+            settings.data_dir / "pacing.json", settings
+        )
         self._jobs: dict[str, JobState] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         # Live worker per job, so pause/resume/cancel can signal it from an HTTP handler. Without
@@ -341,6 +348,11 @@ class JobManager:
                     cookies = None
                 state.anonymous = anonymous
 
+                # Same seam as `anonymous`: a top-level worker-payload key, popped out of
+                # `options` because config_builder only reads keys it knows about and would
+                # silently drop this one.
+                pacing = options.pop("pacing", None)
+
                 problem = self._downloads_dir_problem(state.platform)
                 if problem is not None:
                     await self._emit(
@@ -356,7 +368,7 @@ class JobManager:
                     )
                     return
 
-                await self._spawn_and_stream(state, options, cookies, anonymous)
+                await self._spawn_and_stream(state, options, cookies, anonymous, pacing)
             finally:
                 self._leave_slot(state)
         except asyncio.CancelledError:
@@ -480,6 +492,7 @@ class JobManager:
         options: dict[str, Any],
         cookies: dict[str, Any] | str | None,
         anonymous: bool,
+        pacing: Any = None,
     ) -> None:
         """Spawn the worker, stream events with stall deadlines, retry on stall/crash.
 
@@ -488,7 +501,7 @@ class JobManager:
         walk from zero — the per-profile archive can only resume what was actually downloaded. So
         warm-up gets ``stall_warmup_max_retries``; once files are flowing, ``stall_max_retries``.
         """
-        payload = self._build_payload(state, options, cookies, anonymous)
+        payload = self._build_payload(state, options, cookies, anonymous, pacing)
         python = self._settings.worker_python or sys.executable
 
         attempt = 0
@@ -887,19 +900,38 @@ class JobManager:
         with contextlib.suppress(Exception):  # noqa: BLE001
             await proc.wait()
 
+    def _resolve_pacing(self, platform: str, job_override: Any) -> dict[str, Any] | None:
+        """The pacing block for one job: per-job option > runtime store > env Settings.
+
+        Each layer returns None when it has nothing valid to say, so a malformed override falls
+        through instead of breaking the job.
+
+        The ceiling is then clamped against the stall detector, and that coupling is real: the
+        progress deadline is ``min(max(stall_floor, 4 * avg_inter_file), stall_cap)``, so a job
+        legitimately backed off to more than about a quarter of ``stall_cap`` would be killed as
+        stalled while it is behaving exactly as designed.
+        """
+        resolved = (
+            normalize_pacing(job_override)
+            or self._pacing_store.get(platform)
+            or self._settings.pacing_for(platform)
+        )
+        if resolved is None:
+            return None
+        ceiling = self._settings.stall_cap_seconds / 4.0
+        if resolved["max"] > ceiling:
+            resolved = {**resolved, "max": max(resolved["min"], ceiling)}
+        return resolved
+
     def _build_payload(
         self,
         state: JobState,
         options: dict[str, Any],
         cookies: dict[str, Any] | str | None,
         anonymous: bool,
+        pacing: Any = None,
     ) -> dict[str, Any]:
         merged = dict(options)
-        # Per-request pacing from Settings so it can be tuned by env var after a rate-limit block,
-        # without a rebuild. An explicit per-job option still wins.
-        sleep_request = self._settings.sleep_request_for(state.platform)
-        if sleep_request is not None:
-            merged.setdefault("sleep-request", sleep_request)
         archive_dir = self._settings.data_dir / "archive"
         # Per-profile archive (so a profile can be deleted + re-downloaded cleanly). Falls back to
         # the shared per-platform archive when the URL exposes no username.
@@ -921,6 +953,7 @@ class JobManager:
             "platform": state.platform,
             "output_dir": str(self._settings.downloads_dir),
             "anonymous": anonymous,
+            "pacing": self._resolve_pacing(state.platform, pacing),
             "cookies": cookies,
             "options": merged,
             "http_timeout_seconds": self._settings.http_timeout_seconds,

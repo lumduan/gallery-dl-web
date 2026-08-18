@@ -21,6 +21,7 @@ Both sides must honor it; the TS mirror lives in `frontend/src/lib/events.ts`.
 | `file`      | A file was handled                            | `event` (`downloaded`\|`skipped`), `path`, `filename`, `bytes`? |
 | `progress`  | Running counts (manager-emitted, job-level/monotonic across retries), after each `file` | `downloaded`, `skipped`, `failed` |
 | `heartbeat` | Worker liveness while gallery-dl is silent (non-terminal) | `beat`, `elapsed`                    |
+| `pacing`    | The adaptive request delay changed (non-terminal) | `platform`, `delay`, `previous`, `reason`, `requests` |
 | `stalled`   | No **file** event within the progress deadline (non-terminal) | `attempt`, `threshold`, `phase` (`warmup` \| `download`), `since_last_file`? |
 | `retrying`  | The stalled/exit worker was killed and a fresh one will spawn (non-terminal) | `attempt`, `reason` (`stalled` \| `worker-exited`) |
 | `paused`    | Operator paused the job; worker SIGSTOPed (non-terminal) | `downloaded`, `skipped`                |
@@ -53,7 +54,9 @@ Both sides must honor it; the TS mirror lives in `frontend/src/lib/events.ts`.
      **warm-up** budget (`STALL_WARMUP_SECONDS`), because gallery-dl is silent for minutes while it
      enumerates a profile — Instagram alone sleeps 6-12 s per paginated request. After the first
      file it is `clamp(floor*backoff**attempt, multiplier*avg_inter_file, cap)`.
-   `heartbeat` deliberately resets only the liveness clock, never the progress clock.
+   `heartbeat` deliberately resets only the liveness clock, never the progress clock — and
+   **neither does `pacing`**: sleeping is the opposite of progress, and treating it as activity
+   would defeat stall detection exactly the way a heartbeat would.
 8. A warm-up timeout fails with `reason: no-progress` (not `stalled`) and gets its own, smaller
    retry budget: with zero files fetched the archive has nothing to resume, so a retry just repeats
    the same slow enumeration.
@@ -78,7 +81,23 @@ Both sides must honor it; the TS mirror lives in `frontend/src/lib/events.ts`.
     genuinely deleted account with one. A **rate limit is classified first** — Facebook's block page
     carries login-ish wording, and there the correct advice is to wait, not to re-export cookies.
     `JobSummary.anonymous` reports which mode a job actually ran in.
-12. **Pause is a real process suspension**, driven by `POST /api/jobs/{id}/pause`. The manager
+12. **Pacing is adaptive by default, and `pacing` reports it.** Both platforms are rate-limited,
+    but Facebook fetches one full HTML page *per photo* where Instagram gets ~30 posts per JSON
+    request, so a fixed delay large enough to be safe on a long Facebook run makes every short one
+    needlessly slow. In `adaptive` mode the worker starts at the configured floor and slows down
+    only on evidence — a 429, a 403/503, a login redirect, Facebook's block page, or gallery-dl's
+    own warnings — then decays back after a clean streak. The floor additionally rises with the
+    number of requests already made, because the one block ever observed came ~767 images into a
+    single run. A `pacing` event is emitted **only when the delay changes**, at most every 5 s and
+    at most 200 times per job: `JobState.events` is a bounded deque that `media_paths()` and the
+    zip route read `file` events back out of, so a chatty event type would silently truncate a
+    job's downloads. `delay` and `previous` are seconds; `reason` is one of `ramp`, `recovered`,
+    `http-429`, `http-403`, `http-503`, `http-900`, `login-redirect`, `block-page`, `challenge`,
+    `rate-limited`, `no-download-url`, `request-error`.
+    ⚠️ Back-off lowers the odds of *reaching* a block; it cannot recover from one. gallery-dl
+    aborts the run the moment it sees Facebook's block page, and that outcome is still reported by
+    rule 10's `rate-limited` classification.
+13. **Pause is a real process suspension**, driven by `POST /api/jobs/{id}/pause`. The manager
     SIGSTOPs the worker, so gallery-dl keeps its place in the profile walk and no `heartbeat`
     arrives until it resumes. The concurrency slot is handed back — that is the point, a waiting
     profile starts immediately — and re-acquired on resume, so a resumed job can legitimately sit

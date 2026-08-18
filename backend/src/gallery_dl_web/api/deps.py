@@ -11,6 +11,7 @@ from fastapi import Request
 from gallery_dl_web.config import Settings
 from gallery_dl_web.cookies.store import CookieStore
 from gallery_dl_web.jobs.manager import JobManager
+from gallery_dl_web.pacing.store import PacingStore
 from gallery_dl_web.profiles.store import ProfileStore
 
 
@@ -20,6 +21,10 @@ def get_settings(request: Request) -> Settings:
 
 def get_cookie_store(request: Request) -> CookieStore:
     return request.app.state.cookie_store  # type: ignore[no-any-return]
+
+
+def get_pacing_store(request: Request) -> PacingStore:
+    return request.app.state.pacing_store  # type: ignore[no-any-return]
 
 
 def get_job_manager(request: Request) -> JobManager:

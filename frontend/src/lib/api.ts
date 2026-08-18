@@ -22,9 +22,28 @@ export interface JobSummary {
   final_summary: Record<string, unknown> | null;
 }
 
+export type PacingMode = "adaptive" | "fixed";
+
+/**
+ * Per-request pacing for one platform. `min`/`max` mean different things per mode: in `adaptive`
+ * they are the floor (and starting delay) and the back-off ceiling; in `fixed` they are the ends
+ * of a random range sampled per request.
+ */
+export interface Pacing {
+  mode: PacingMode;
+  min: number;
+  max: number;
+}
+
+/** As the API reports it: the effective values, plus whether the operator set them. */
+export interface PacingStatus extends Pacing {
+  overridden: boolean;
+}
+
 export interface SettingsResponse {
   has_ig: boolean;
   has_fb: boolean;
+  pacing: Partial<Record<"instagram" | "facebook", PacingStatus>>;
 }
 
 export interface FileEntry {
@@ -87,6 +106,19 @@ export const cancelJob = (jobId: string) => controlJob(jobId, "cancel");
 
 export async function getSettings(): Promise<SettingsResponse> {
   return asJson(await fetch("/api/settings"));
+}
+
+/** Set one platform's pacing override, or pass `null` to fall back to the server's env default. */
+export async function updatePacing(
+  platform: "instagram" | "facebook",
+  pacing: Pacing | null,
+): Promise<SettingsResponse> {
+  const res = await fetch("/api/settings/pacing", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ platform, pacing }),
+  });
+  return asJson(res);
 }
 
 export async function updateCookies(body: {

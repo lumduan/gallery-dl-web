@@ -23,6 +23,7 @@ from gallery_dl_web.api import (
 from gallery_dl_web.config import Settings, get_settings
 from gallery_dl_web.cookies.store import CookieStore
 from gallery_dl_web.jobs.manager import JobManager
+from gallery_dl_web.pacing.store import PacingStore
 from gallery_dl_web.profiles.store import ProfileStore
 
 logger = logging.getLogger(__name__)
@@ -107,6 +108,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
 
     app.state.cookie_store.load()
+    app.state.pacing_store.load()
     gc_task = asyncio.create_task(_gc_loop(app.state.job_manager))
     zip_task = asyncio.create_task(_zip_ttl_loop(settings))
     logger.info("gallery-dl-web API ready (data_dir=%s)", settings.data_dir)
@@ -126,8 +128,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="gallery-dl-web API", version="0.4.1", lifespan=lifespan)
     app.state.settings = settings
     app.state.cookie_store = CookieStore(settings.cookies_path)
+    app.state.pacing_store = PacingStore(settings.data_dir / "pacing.json", settings)
     app.state.profile_store = ProfileStore(settings)
-    app.state.job_manager = JobManager(settings, app.state.cookie_store, app.state.profile_store)
+    app.state.job_manager = JobManager(
+        settings, app.state.cookie_store, app.state.profile_store, app.state.pacing_store
+    )
 
     app.add_middleware(
         CORSMiddleware,
