@@ -28,12 +28,13 @@ import sys
 import threading
 import time
 import types
+from collections.abc import Callable
 from typing import IO, Any
 
 # Module-level references so tests can monkeypatch (e.g. ``gallery_dl.job.DownloadJob``).
 from gallery_dl import config, job, output
 
-from gallery_dl_web.gallerydl import config_builder, events
+from gallery_dl_web.gallerydl import config_builder, events, pacing
 
 logger = logging.getLogger("gallery_dl_web.worker")
 
@@ -171,6 +172,29 @@ _POSTPROCESSORS = [
 ]
 
 
+def _install_pacing(payload: dict[str, Any]) -> Callable[[], None] | None:
+    """Install the adaptive pacer, or return None to leave gallery-dl's own `sleep-request` alone.
+
+    Wrapped so a bug in here can never cost a download: a pacing failure degrades to the fixed
+    `sleep-request` that ``config_builder`` already set, which in adaptive mode is the floor.
+    Logged to stderr — stdout is the JSON event channel and a stray line would corrupt it.
+    """
+    block = payload.get("pacing")
+    if not isinstance(block, dict) or block.get("mode") != "adaptive":
+        return None
+    try:
+        pacer = pacing.AdaptivePacer(
+            min_delay=float(block["min"]),
+            max_delay=float(block["max"]),
+            emit=_emit,
+            platform=str(payload.get("platform", "")),
+        )
+        return pacing.install(pacer)
+    except Exception:
+        logger.exception("adaptive pacing could not be installed; falling back to fixed pacing")
+        return None
+
+
 def _start_heartbeat(interval: float) -> threading.Event:
     """Emit a ``heartbeat`` event every ``interval`` seconds until the returned Event is set.
 
@@ -211,8 +235,13 @@ def run(payload: dict[str, Any]) -> int:
     config.set(("extractor",), "postprocessors", _POSTPROCESSORS)
 
     heartbeat: threading.Event | None = None
+    stop_pacing: Callable[[], None] | None = None
     try:
         config_builder.apply(payload, config)
+        # After config_builder (whose `sleep-request` is the seed and the fallback) and before
+        # DownloadJob, because Job.run() -> _init() -> extractor.initialize() builds the session
+        # the response hook has to be attached to.
+        stop_pacing = _install_pacing(payload)
         _emit({"type": "started", "url": url})
 
         interval = float(payload.get("heartbeat_seconds", 15.0))
@@ -250,6 +279,10 @@ def run(payload: dict[str, Any]) -> int:
         # reading at the terminal event and reaps the process.
         if heartbeat is not None:
             heartbeat.set()
+        # One process is one job, so this only matters to the in-process worker tests — but
+        # gallery-dl's Extractor is class-level state and leaving it patched leaks across them.
+        if stop_pacing is not None:
+            stop_pacing()
 
 
 def main(stdin: IO[str] | None = None) -> int:

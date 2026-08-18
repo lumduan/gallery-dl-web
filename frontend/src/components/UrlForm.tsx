@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { detectPlatform } from "@/lib/platform";
-import { createJob, getSettings, type SettingsResponse } from "@/lib/api";
+import { createJob, getSettings, type PacingMode, type SettingsResponse } from "@/lib/api";
 
 export function UrlForm() {
   const router = useRouter();
@@ -12,6 +12,13 @@ export function UrlForm() {
   const [include, setInclude] = useState("posts,reels");
   const [videos, setVideos] = useState(true);
   const [anonymous, setAnonymous] = useState(false);
+  const [albums, setAlbums] = useState(false);
+  const [quickUpdate, setQuickUpdate] = useState(false);
+  const [quickLimit, setQuickLimit] = useState(20);
+  // "default" means send nothing and let the server's Settings decide.
+  const [pacingMode, setPacingMode] = useState<PacingMode | "default">("default");
+  const [pacingMin, setPacingMin] = useState(1);
+  const [pacingMax, setPacingMax] = useState(30);
   const [cookieStatus, setCookieStatus] = useState<SettingsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -48,6 +55,15 @@ export function UrlForm() {
       if (platform === "instagram") {
         options["include"] = include;
         options["videos"] = videos;
+      }
+      if (platform === "facebook") {
+        // Default is "photos" alone; albums re-walks pages `photos` already covered.
+        if (albums) options["include"] = "photos,albums";
+        if (quickUpdate) options["quick_update"] = quickLimit;
+      }
+      // Omitted entirely unless overridden, so the server's Settings stay in charge.
+      if (pacingMode !== "default") {
+        options["pacing"] = { mode: pacingMode, min: pacingMin, max: pacingMax };
       }
       // Only sent when opted in. Omitted, the backend still runs anonymously if no cookies are
       // stored for the platform — this flag is the "even though I have cookies" override.
@@ -108,28 +124,131 @@ export function UrlForm() {
             checked={showAdvanced}
             onChange={(e) => setShowAdvanced(e.target.checked)}
           />
-          <div className="collapse-title font-medium">Advanced options (Instagram)</div>
+          <div className="collapse-title font-medium">Advanced options for this job</div>
           <div className="collapse-content flex flex-col gap-3 pt-2">
-            <label className="form-control">
-              <div className="label">
-                <span className="label-text">include</span>
+            {platform === "instagram" && (
+              <>
+                <label className="form-control">
+                  <div className="label">
+                    <span className="label-text">include</span>
+                  </div>
+                  <input
+                    className="input input-bordered w-full"
+                    value={include}
+                    onChange={(e) => setInclude(e.target.value)}
+                    placeholder="posts,reels,stories,highlights"
+                  />
+                </label>
+                <label className="label cursor-pointer justify-start gap-3">
+                  <input
+                    type="checkbox"
+                    className="checkbox checkbox-sm"
+                    checked={videos}
+                    onChange={(e) => setVideos(e.target.checked)}
+                  />
+                  <span className="label-text">Download videos</span>
+                </label>
+              </>
+            )}
+
+            {platform === "facebook" && (
+              <>
+                <div className="flex flex-col gap-1">
+                  <label className="label cursor-pointer justify-start gap-3">
+                    <input
+                      type="checkbox"
+                      className="checkbox checkbox-sm"
+                      checked={albums}
+                      onChange={(e) => setAlbums(e.target.checked)}
+                    />
+                    <span className="label-text">Also walk albums</span>
+                  </label>
+                  <p className="pl-9 text-xs text-base-content/60">
+                    Roughly doubles the time for very few extra files: an album re-fetches photo
+                    pages the main walk already covered, and Facebook only knows a photo is already
+                    downloaded <em>after</em> fetching its page.
+                  </p>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="label cursor-pointer justify-start gap-3">
+                    <input
+                      type="checkbox"
+                      className="checkbox checkbox-sm"
+                      checked={quickUpdate}
+                      onChange={(e) => setQuickUpdate(e.target.checked)}
+                    />
+                    <span className="label-text">Quick update — stop after</span>
+                    <input
+                      type="number"
+                      min={1}
+                      className="input input-bordered input-xs w-20"
+                      value={quickLimit}
+                      disabled={!quickUpdate}
+                      onChange={(e) => setQuickLimit(Number(e.target.value))}
+                    />
+                    <span className="label-text">already-downloaded files</span>
+                  </label>
+                  <p className="pl-9 text-xs text-base-content/60">
+                    Facebook lists newest first, so a refresh reaches the new photos immediately and
+                    then re-fetches every old page just to skip it. Leave this off if a previous run
+                    was interrupted — it would stop before reaching the part you never got.
+                  </p>
+                </div>
+              </>
+            )}
+
+            <div className="flex flex-col gap-2">
+              <span className="label-text">Pacing for this job</span>
+              <div className="flex flex-wrap items-center gap-3">
+                <select
+                  className="select select-bordered select-sm"
+                  value={pacingMode}
+                  onChange={(e) => setPacingMode(e.target.value as PacingMode | "default")}
+                >
+                  <option value="default">Server default</option>
+                  <option value="adaptive">Adaptive</option>
+                  <option value="fixed">Fixed</option>
+                </select>
+                {pacingMode !== "default" && (
+                  <>
+                    <label className="flex items-center gap-2">
+                      <span className="label-text text-xs">
+                        {pacingMode === "adaptive" ? "Floor (s)" : "Min (s)"}
+                      </span>
+                      <input
+                        type="number"
+                        min={0}
+                        step="0.5"
+                        className="input input-bordered input-sm w-20"
+                        value={pacingMin}
+                        onChange={(e) => setPacingMin(Number(e.target.value))}
+                      />
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <span className="label-text text-xs">
+                        {pacingMode === "adaptive" ? "Ceiling (s)" : "Max (s)"}
+                      </span>
+                      <input
+                        type="number"
+                        min={0}
+                        step="0.5"
+                        className="input input-bordered input-sm w-20"
+                        value={pacingMax}
+                        onChange={(e) => setPacingMax(Number(e.target.value))}
+                      />
+                    </label>
+                  </>
+                )}
               </div>
-              <input
-                className="input input-bordered w-full"
-                value={include}
-                onChange={(e) => setInclude(e.target.value)}
-                placeholder="posts,reels,stories,highlights"
-              />
-            </label>
-            <label className="label cursor-pointer justify-start gap-3">
-              <input
-                type="checkbox"
-                className="checkbox checkbox-sm"
-                checked={videos}
-                onChange={(e) => setVideos(e.target.checked)}
-              />
-              <span className="label-text">Download videos</span>
-            </label>
+              <p className="text-xs text-base-content/60">
+                Adaptive starts at the floor and backs off only when the platform pushes back.
+                Change the default for every job in{" "}
+                <a className="link" href="/settings">
+                  Settings
+                </a>
+                .
+              </p>
+            </div>
           </div>
         </div>
 

@@ -6,6 +6,7 @@ export type JobEventType =
   | "file"
   | "progress"
   | "heartbeat"
+  | "pacing"
   | "stalled"
   | "retrying"
   | "paused"
@@ -25,6 +26,7 @@ export const JOB_EVENT_TYPES: JobEventType[] = [
   "file",
   "progress",
   "heartbeat",
+  "pacing",
   "stalled",
   "retrying",
   "paused",
@@ -67,6 +69,15 @@ export interface JobEvent {
   /** heartbeat only: beat counter and seconds since the worker started. */
   beat?: number;
   elapsed?: number;
+  /**
+   * pacing only: the adaptive per-request delay changed, in seconds. Emitted on change only
+   * (and rate-limited), never on every request. `reason` is why it moved — `ramp` and
+   * `recovered` are routine, anything else means the platform pushed back.
+   */
+  delay?: number;
+  previous?: number;
+  requests?: number;
+  platform?: string;
   /** resumed only: how long the job was paused, in seconds. */
   paused_for?: number;
   ts?: number;

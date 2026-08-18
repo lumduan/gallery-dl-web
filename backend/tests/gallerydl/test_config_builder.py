@@ -211,7 +211,7 @@ def test_anonymous_facebook_needs_no_cookies_and_no_tuning() -> None:
     assert d[(("extractor", "facebook"), "cookies")] is None
     assert (("extractor", "facebook"), "api") not in d
     # Facebook's include is never filtered — its categories all work logged-out on public content.
-    assert d[(("extractor", "facebook"), "include")] == "photos,albums"
+    assert d[(("extractor", "facebook"), "include")] == "photos"
     # Pacing still applies: logged-out requests are rate-limited by IP instead of by account.
     assert d[(("extractor", "facebook"), "sleep-request")] == [3.0, 8.0]
 
@@ -222,3 +222,85 @@ def test_anonymous_still_rejects_an_unsupported_platform() -> None:
             {"platform": "twitter", "output_dir": "/out", "cookies": None, "anonymous": True},
             FakeConfig(),
         )
+
+
+def test_facebook_albums_are_opt_in() -> None:
+    """`albums` re-walks the photos `photos` already covered, and the archive is only checked
+    AFTER each 1-3 MB page is fetched — so it roughly doubles wall-clock for no new files."""
+    fake = FakeConfig()
+    config_builder.apply(_fb(), fake)
+    assert fake.as_dict()[(("extractor", "facebook"), "include")] == "photos"
+
+    fake = FakeConfig()
+    config_builder.apply(_fb(options={"include": "photos,albums"}), fake)
+    assert fake.as_dict()[(("extractor", "facebook"), "include")] == "photos,albums"
+
+
+def test_facebook_fallback_stall_is_bounded() -> None:
+    """Two consecutive unparseable photos at gallery-dl's defaults (2 x 61 s each) would blow the
+    manager's progress deadline and get a healthy job killed and re-walked from the top."""
+    fake = FakeConfig()
+    config_builder.apply(_fb(), fake)
+    d = fake.as_dict()
+    assert d[(("extractor", "facebook"), "fallback-retries")] == 1
+    # Shaped, not flattened: downloader/http.py inherits this for CDN 429s.
+    assert d[(("extractor", "facebook"), "sleep-429")] == "exponential:2:0:60=15"
+
+
+def test_adaptive_pacing_seeds_sleep_request_with_the_floor() -> None:
+    """In adaptive mode the worker's pacer owns the delay; `sleep-request` is only the fallback
+    for a run where the pacer never installs, and the floor is the right thing to fall back to."""
+    fake = FakeConfig()
+    config_builder.apply(_fb(pacing={"mode": "adaptive", "min": 1.5, "max": 30.0}), fake)
+    assert fake.as_dict()[(("extractor", "facebook"), "sleep-request")] == [1.5, 1.5]
+
+
+def test_fixed_pacing_passes_the_range_through() -> None:
+    fake = FakeConfig()
+    config_builder.apply(_fb(pacing={"mode": "fixed", "min": 3.0, "max": 8.0}), fake)
+    assert fake.as_dict()[(("extractor", "facebook"), "sleep-request")] == [3.0, 8.0]
+
+
+def test_an_explicit_sleep_request_beats_the_pacing_block() -> None:
+    """The raw gallery-dl escape hatch stays the highest-precedence knob."""
+    fake = FakeConfig()
+    config_builder.apply(
+        _fb(
+            pacing={"mode": "adaptive", "min": 1.0, "max": 30.0},
+            options={"sleep-request": [11.0, 12.0]},
+        ),
+        fake,
+    )
+    assert fake.as_dict()[(("extractor", "facebook"), "sleep-request")] == [11.0, 12.0]
+
+
+def test_quick_update_sets_a_consecutive_skip_limit() -> None:
+    """Facebook walks newest-first, so a refresh re-fetches every old page purely to skip it."""
+    fake = FakeConfig()
+    config_builder.apply(_fb(), fake)
+    assert (("extractor", "facebook"), "skip") not in fake.as_dict()
+
+    fake = FakeConfig()
+    config_builder.apply(_fb(options={"quick_update": True}), fake)
+    # `terminate`, not `abort`: a parent dispatching several extractors must still run the rest.
+    assert fake.as_dict()[(("extractor", "facebook"), "skip")] == "terminate:20"
+
+    fake = FakeConfig()
+    config_builder.apply(_fb(options={"quick_update": 5}), fake)
+    assert fake.as_dict()[(("extractor", "facebook"), "skip")] == "terminate:5"
+
+
+def test_quick_update_ignores_nonsense_instead_of_failing_the_job() -> None:
+    for bad in ("", "abc", 0, -3, None, False):
+        fake = FakeConfig()
+        config_builder.apply(_fb(options={"quick_update": bad}), fake)
+        assert (("extractor", "facebook"), "skip") not in fake.as_dict()
+
+
+def test_a_malformed_pacing_block_falls_back_instead_of_failing_the_job() -> None:
+    """Pacing is a hint. config_builder is the load-bearing translator and must not raise here —
+    the worker's own guard runs later, so a crash here would kill the job outright."""
+    for bad in ({"mode": "adaptive", "min": "x", "max": 30.0}, {"mode": "adaptive"}, {}):
+        fake = FakeConfig()
+        config_builder.apply(_fb(pacing=bad), fake)
+        assert fake.as_dict()[(("extractor", "facebook"), "sleep-request")] == [3.0, 8.0]

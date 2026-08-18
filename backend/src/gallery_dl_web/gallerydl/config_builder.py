@@ -12,9 +12,14 @@ Payload shape (received by the worker over stdin)::
     {
       "job_id", "url", "platform", "output_dir",
       "anonymous": bool,   # run logged-out; `cookies` is then None and never validated
+      "pacing": {"mode": "adaptive"|"fixed", "min": float, "max": float} | None,
       "cookies": {"sessionid": "..."} (IG) | {name: value, ...} (FB) | None,
-      "options": {"include", "videos", "sleep_request", "directory", "filename", "archive", "api"},
+      "options": {"include", "videos", "sleep-request", "directory", "filename", "archive", "api",
+                  "fallback-retries", "quick_update"},
     }
+
+Note the option keys are gallery-dl's own, so they are HYPHENATED (`sleep-request`), not
+snake_case — the defaults loop below looks them up by the same name it sets them under.
 """
 
 from __future__ import annotations
@@ -33,19 +38,37 @@ class ConfigLike(Protocol):
 _IG_DEFAULTS: dict[str, Any] = {
     "include": "posts,reels",
     "videos": True,
+    # Mirrors gallery-dl's own InstagramExtractor.request_interval. Only reached when the payload
+    # carries no `pacing` block (a direct worker invocation); the manager always sends one.
     "sleep-request": [6.0, 12.0],
     "directory": ["instagram", "{username}"],
     "filename": "{date}_{media_id}_{shortcode}.{extension}",
 }
 
 _FB_DEFAULTS: dict[str, Any] = {
-    "include": "photos,albums",
+    # `albums` is deliberately NOT here. FacebookAlbumsExtractor queues a FacebookSetExtractor per
+    # album, each doing its own full serial walk over photos `photos` already covered — and
+    # DownloadJob.handle_url checks the archive only AFTER the page has been fetched and parsed,
+    # so the duplicate walk costs full 1-3 MB page fetches for near-zero new files. Roughly a 2x
+    # wall-clock tax. Pass include="photos,albums" per job to get it back.
+    "include": "photos",
     "videos": "ytdl",
-    # Facebook blocks an account that fetches images back-to-back ("You've been temporarily blocked
-    # from viewing images" after ~767 in one run). Lower than Instagram's range because Facebook
-    # issues a page request per photo, so the delay compounds. The manager overrides this from
-    # Settings; this default keeps direct worker invocations paced too.
+    # gallery-dl itself ships Facebook with NO pacing (request_interval 0.0); this delay is ours,
+    # added after Facebook blocked an account at ~767 images in one run. Only reached when the
+    # payload carries no `pacing` block — the manager always sends one.
     "sleep-request": [3.0, 8.0],
+    # On a photo whose download URL fails to parse, `extract_set` retries via
+    # `self.wait(self._interval_429(n))`. gallery-dl's defaults make that 60 s + wait()'s 1 s
+    # adjust, TWICE — 122 s of dead sleep per bad photo, emitting no `prepare` or `file`, so the
+    # manager's progress deadline is burning the whole time. Two consecutive bad photos would
+    # exceed `stall_floor_seconds` on their own and get a healthy job killed and re-walked.
+    "fallback-retries": 1,
+    # ...and shape the backoff instead of flattening it: 15 s, then 30 s, then 60 s
+    # (`util.build_duration_func_ex` parses "exponential:base:start:max=value"). A plain small
+    # number would be actively dangerous — `downloader/http.py` inherits `extractor._interval_429`
+    # for CDN 429s, so flattening it to 5 s is how a soft block becomes a hard one. This keeps the
+    # long tail for genuine 429s while removing the front-loaded 60 s the fallback path abuses.
+    "sleep-429": "exponential:2:0:60=15",
     "directory": ["facebook", "{username}"],
     "filename": "{id}.{extension}",
 }
@@ -54,6 +77,9 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     "instagram": _IG_DEFAULTS,
     "facebook": _FB_DEFAULTS,
 }
+
+# Consecutive-skip limit used when `quick_update` is passed as a bare `true`.
+_QUICK_UPDATE_DEFAULT = 20
 
 _IG_PATH: ConfigPath = ("extractor", "instagram")
 _FB_PATH: ConfigPath = ("extractor", "facebook")
@@ -106,9 +132,14 @@ def apply(payload: dict[str, Any], config: ConfigLike) -> list[tuple[ConfigPath,
     # Resolve `include` ONCE, here: the avatar block below appends to it, and re-deriving it there
     # from raw `options` would silently undo the anonymous filtering.
     resolved_include = _resolve_include(platform, options, anonymous)
+    resolved_sleep = _resolve_sleep_request(platform, options, payload.get("pacing"))
 
     for key, default in _PLATFORM_DEFAULTS[platform].items():
-        value = resolved_include if key == "include" else options.get(key, default)
+        value: Any = options.get(key, default)
+        if key == "include":
+            value = resolved_include
+        elif key == "sleep-request":
+            value = resolved_sleep
         _set(platform_path, key, value)
 
     # Logged-out, Instagram's REST /api/v1/* endpoints mostly 401; the GraphQL query_hash path is
@@ -127,7 +158,53 @@ def apply(payload: dict[str, Any], config: ConfigLike) -> list[tuple[ConfigPath,
     if options.get("archive"):
         _set(platform_path, "archive", str(options["archive"]))
 
+    # Quick update: stop an extractor after N *consecutive* already-have files. Facebook walks its
+    # photo set newest-first, so a refresh reaches the new photos immediately and then re-fetches
+    # every old page purely to skip it. `terminate` (not `abort`) stops only the current extractor,
+    # so a parent dispatching several still runs the rest.
+    # Off by default: a run that was blocked halfway leaves the FRONT of the set archived, so an
+    # early stop would hide the un-fetched tail.
+    if quick := _quick_update_limit(options):
+        _set(platform_path, "skip", f"terminate:{quick}")
+
     return calls
+
+
+def _quick_update_limit(options: dict[str, Any]) -> int:
+    """The `quick_update` option as a positive int, or 0 when off/invalid."""
+    raw = options.get("quick_update")
+    if raw is True:
+        return _QUICK_UPDATE_DEFAULT
+    try:
+        value = int(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
+    return value if value > 0 else 0
+
+
+def _resolve_sleep_request(platform: str, options: dict[str, Any], pacing: Any) -> Any:
+    """What gallery-dl's own `sleep-request` should be for this job.
+
+    Precedence: an explicit per-job `sleep-request` wins outright (it is the raw gallery-dl escape
+    hatch), then the resolved `pacing` block, then the platform default.
+
+    In **adaptive** mode this is set to ``[min, min]`` — the floor, not the range. The worker's
+    ``pacing.AdaptivePacer`` overrides ``Extractor._interval_request`` per request and is the real
+    source of the delay; this value only matters if the pacer fails to install, and then the floor
+    is the right thing to fall back to.
+    """
+    if "sleep-request" in options:
+        return options["sleep-request"]
+    if isinstance(pacing, dict):
+        try:
+            lo, hi = float(pacing["min"]), float(pacing["max"])
+        except (KeyError, TypeError, ValueError):
+            # Pacing is a hint, not a contract. A malformed block must not fail the job — the
+            # platform default below is always a usable answer.
+            return _PLATFORM_DEFAULTS[platform]["sleep-request"]
+        lo, hi = max(0.0, lo), max(0.0, hi)
+        return [lo, lo] if pacing.get("mode") == "adaptive" else [lo, max(lo, hi)]
+    return _PLATFORM_DEFAULTS[platform]["sleep-request"]
 
 
 def _resolve_include(platform: str, options: dict[str, Any], anonymous: bool) -> str:

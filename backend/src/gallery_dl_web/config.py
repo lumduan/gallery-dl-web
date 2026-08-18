@@ -6,10 +6,32 @@ they are managed at runtime via the Settings UI and stored only in ``cookies_pat
 """
 
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+PACING_MODES = ("adaptive", "fixed")
+
+
+def normalize_pacing(raw: Any) -> dict[str, Any] | None:
+    """Coerce an arbitrary pacing block into ``{"mode", "min", "max"}``, or None if unusable.
+
+    Shared by ``Settings``, the runtime store and the per-job option, so an operator, a JSON file
+    and an API caller cannot disagree about what a valid value is. Anything unrecognised returns
+    None, which means "this layer has no opinion" and lets the layer below win.
+    """
+    if not isinstance(raw, dict):
+        return None
+    mode = str(raw.get("mode", "adaptive")).strip().lower()
+    if mode not in PACING_MODES:
+        return None
+    try:
+        lo = max(0.0, float(raw["min"]))
+        hi = max(0.0, float(raw["max"]))
+    except (KeyError, TypeError, ValueError):
+        return None
+    return {"mode": mode, "min": lo, "max": max(lo, hi)}
 
 
 class Settings(BaseSettings):
@@ -49,30 +71,54 @@ class Settings(BaseSettings):
     # an open archive SQLite handle alive forever. Auto-cancel after this long (0 disables).
     pause_max_seconds: float = 7200.0
 
-    # Per-request pacing -> gallery-dl `sleep-request` (a [min, max] range it samples per request).
-    # Both platforms rate-limit scraping. Facebook is the harsher one: with no delay it blocked an
-    # account after ~767 images in a single run ("You've been temporarily blocked from viewing
-    # images"), so it is paced too — less aggressively than Instagram, since Facebook needs a page
-    # request per photo and the delay compounds. Raise these if you get blocked; a block costs far
-    # more time than the delay does.
-    instagram_sleep_request_min: float = 6.0
-    instagram_sleep_request_max: float = 12.0
-    facebook_sleep_request_min: float = 3.0
-    facebook_sleep_request_max: float = 8.0
+    # Per-request pacing. Both platforms rate-limit scraping, but they need it in opposite shapes:
+    # Instagram gets ~30 posts per JSON request, so a delay amortizes away; Facebook fetches one
+    # full HTML page PER PHOTO, so it pays the delay once per image. A fixed delay large enough to
+    # be safe on a long Facebook run therefore makes every short one needlessly slow.
+    #
+    # Hence two modes, and MIN/MAX mean different things in each:
+    #   adaptive (default) — MIN is the floor and the starting delay, MAX the back-off ceiling.
+    #                        The worker starts at MIN and only slows down when the platform pushes
+    #                        back (429 / 403 / block page / login redirect), then decays back down.
+    #                        The floor also rises with the number of requests already made, because
+    #                        the one block ever observed came ~767 images into a single run.
+    #   fixed              — every request sleeps a uniform random value in [MIN, MAX], which is
+    #                        gallery-dl's own `sleep-request` behaviour and what this app did
+    #                        before adaptive mode.
+    # Raise MIN if you get blocked; a block costs far more time than the delay does.
+    instagram_pacing_mode: str = "adaptive"
+    facebook_pacing_mode: str = "adaptive"
+    instagram_sleep_request_min: float = 4.0
+    instagram_sleep_request_max: float = 30.0
+    facebook_sleep_request_min: float = 1.0
+    facebook_sleep_request_max: float = 30.0
 
-    def sleep_request_for(self, platform: str) -> list[float] | None:
-        """The [min, max] sleep-request range for a platform, or None if unknown/disabled."""
+    def pacing_for(self, platform: str) -> dict[str, Any] | None:
+        """The resolved pacing block for a platform, or None if the platform is unknown.
+
+        Shape: ``{"mode": "adaptive"|"fixed", "min": float, "max": float}``. Negative values clamp
+        to 0 and an inverted range collapses to ``[lo, lo]``, so gallery-dl never sees a range it
+        would choke on. ``max <= 0`` in fixed mode means "no pacing at all", expressed as
+        ``[0.0, 0.0]`` — which really does disable it, unlike the old sentinel (see the note in
+        `_build_payload`).
+        """
         pairs = {
-            "instagram": (self.instagram_sleep_request_min, self.instagram_sleep_request_max),
-            "facebook": (self.facebook_sleep_request_min, self.facebook_sleep_request_max),
+            "instagram": (
+                self.instagram_pacing_mode,
+                self.instagram_sleep_request_min,
+                self.instagram_sleep_request_max,
+            ),
+            "facebook": (
+                self.facebook_pacing_mode,
+                self.facebook_sleep_request_min,
+                self.facebook_sleep_request_max,
+            ),
         }
-        pair = pairs.get(platform)
-        if pair is None:
+        entry = pairs.get(platform)
+        if entry is None:
             return None
-        lo, hi = max(0.0, pair[0]), max(0.0, pair[1])
-        if hi <= 0:
-            return None  # explicitly disabled
-        return [lo, max(lo, hi)]
+        mode, raw_lo, raw_hi = entry
+        return normalize_pacing({"mode": mode, "min": raw_lo, "max": raw_hi})
 
     # Stall detection + retry. Two independent deadlines (see jobs/manager.py):
     #   * LIVENESS  — no line at all on worker stdout (not even a heartbeat) => the process is
