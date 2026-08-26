@@ -6,6 +6,7 @@ drives a fake Extractor class rather than a real one.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -53,6 +54,11 @@ class FakeResponse:
             raise AssertionError("the pacer must never read .content")
         body = self._content
         return body if isinstance(body, bytes) else b""
+
+
+def _html(body: bytes) -> FakeResponse:
+    """A text/html response whose body the sensor is allowed to read."""
+    return FakeResponse(200, body=body, headers={"content-type": "text/html"}, allow_read=True)
 
 
 def _clock() -> Any:
@@ -203,8 +209,10 @@ def test_next_delay_is_a_zero_arg_float_callable() -> None:
         (FakeResponse(200, url="https://www.instagram.com/accounts/login/"), 30.0),
         # `consumed=True` is REQUIRED for these two, and that requirement is the bug: see
         # test_the_block_page_scan_cannot_fire_at_hook_time below.
-        (FakeResponse(200, body=b'x{"__dr":"CometErrorRoot.react"}y', consumed=True), 30.0),
-        (FakeResponse(200, body=b"You have been temporarily blocked", consumed=True), 30.0),
+        # A block page is served as text/html; `capture_body` reads a body only for JSON/HTML,
+        # so the header is now part of the signal rather than incidental.
+        (_html(b'x{"__dr":"CometErrorRoot.react"}y'), 30.0),
+        (_html(b"You have been temporarily blocked"), 30.0),
         # Buffered flag set but body still `False` — an iter_content-exhausted response.
         (FakeResponse(200, body=None, consumed=False), 1.0),
     ],
@@ -215,29 +223,17 @@ def test_observe_classifies_each_signal(response: FakeResponse, expected: float)
     assert p.delay == expected
 
 
-def test_the_block_page_scan_cannot_fire_at_hook_time() -> None:
-    """The block-page branch is unreachable in production, and this pins that fact.
+def test_the_block_page_body_is_read_at_hook_time() -> None:
+    """The inverse of what this file used to assert, and the point of the signature work.
 
-    ``_buffered_body`` only returns bytes when ``_content_consumed is True``. ``Session.send``
-    dispatches response hooks at ``sessions.py:791`` and buffers the body at ``sessions.py:827``, so
-    the flag is always ``False`` when the hook runs — the same block page that scores 30.0 with
-    ``consumed=True`` above is invisible with the production default.
-
-    Facebook is unaffected in practice: its real sensor is the log handler
-    (``test_the_log_sensor_catches_facebooks_http_200_soft_block``). Instagram had no equivalent,
-    which is why its HTTP-200 throttles went unnoticed. The body-level matcher that fixes this
-    lands with the signature table; until then this asserts the gap rather than hiding it.
+    The old sensor refused to read an unbuffered body, so its block-page branch could never fire
+    against a live server — `Session.send` dispatches hooks at `sessions.py:791` and buffers at
+    `:827`. `telemetry.capture_body` reads it deliberately, because for a non-streamed response
+    `requests` performs the identical read moments later.
     """
     p = _pacer()
-    p.observe(FakeResponse(200, body=b'x{"__dr":"CometErrorRoot.react"}y'))
-    assert p.delay == 1.0, "if this now backs off, the body matcher landed — update this test"
-
-
-def test_a_streamed_body_is_never_scanned() -> None:
-    """An image download is streamed; scanning it would buffer the whole file into RAM."""
-    p = _pacer()
-    p.observe(FakeResponse(200, body=b'{"__dr":"CometErrorRoot.react"}'), streamed=True)
-    assert p.delay == 1.0
+    p.observe(_html(b'x{"__dr":"CometErrorRoot.react"}y'))
+    assert p.delay == 30.0, "the block page must now be seen, not silently skipped"
 
 
 def test_streamed_responses_never_advance_the_clean_streak() -> None:
@@ -401,13 +397,52 @@ def test_events_are_spaced_in_time() -> None:
     assert len(seen) == 1  # everything after the first is inside MIN_EVENT_INTERVAL
 
 
-def test_events_carry_no_url_or_body() -> None:
-    """The event contract forbids leaking anything but counts and filenames."""
+def test_events_carry_no_url_and_no_secrets() -> None:
+    """The event contract forbids leaking anything but counts, filenames and a redacted body.
+
+    A `pushback` event deliberately carries a body prefix — that is what lets the UI say *why* a
+    job stopped — so the guard is no longer "no body" but "no URL, and nothing sensitive in it".
+    The URL is the sharper risk: Instagram signs media URLs in the query string.
+    """
     seen: list[dict[str, Any]] = []
     p = _pacer(emit=seen.append, platform="facebook")
-    p.observe(FakeResponse(429, url="https://www.facebook.com/photo/?fbid=SECRET"))
+    p.observe(
+        FakeResponse(
+            429,
+            url="https://www.facebook.com/photo/?fbid=SECRET&sig=" + "f" * 40,
+            body=b'{"sessionid":"51234%3AAbCdEf%3A17","error":"rate limited"}',
+            headers={"content-type": "application/json"},
+            allow_read=True,
+        )
+    )
     assert seen
-    assert set(seen[0]) == {"type", "platform", "delay", "previous", "reason", "requests"}
+    blob = json.dumps(seen)
+    assert "SECRET" not in blob, "a query string reached an event"
+    assert "51234%3AAbCdEf" not in blob, "a session cookie reached an event"
+    assert not any("url" in e for e in seen), "no event may carry a URL"
+
+    kinds = {e["type"] for e in seen}
+    assert kinds <= {"pacing", "pushback"}
+    for e in seen:
+        expected = (
+            {"type", "platform", "delay", "previous", "reason", "requests"}
+            if e["type"] == "pacing"
+            else {"type", "platform", "tier", "rule", "delay", "requests", "body"}
+        )
+        assert set(e) == expected, f"{e['type']} event key set changed"
+
+
+def test_a_pushback_event_names_the_rule_that_matched() -> None:
+    """The operator needs to know WHICH signature fired, not just that one did."""
+    seen: list[dict[str, Any]] = []
+    p = _pacer(emit=seen.append, platform="instagram")
+    p.observe(
+        FakeResponse(200, url="https://www.instagram.com/", headers={"content-type": "text/html"})
+    )
+    pushbacks = [e for e in seen if e["type"] == "pushback"]
+    assert pushbacks, "the observed Instagram block must announce itself"
+    assert pushbacks[0]["tier"] == "terminal"
+    assert pushbacks[0]["rule"] == "ig-redirect-root"
 
 
 # --- the Extractor.request patch ------------------------------------------------------------------

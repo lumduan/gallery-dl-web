@@ -142,6 +142,26 @@ Two anonymous-only Instagram adjustments, neither of which applies to Facebook: 
 avatar block appends to it. It used to be derived twice from raw `options`; leave it that way and
 the avatar append silently re-introduces the categories anonymous mode just filtered out.
 
+**Instagram's block is a 302 to the bare home page, and pushback lives in a signature table.**
+Captured 2026-08-26: a run at `adaptive 4-30` died after 859 downloads / 885 s with
+`AbortExtraction: HTTP redirect to home page`. It is **not** a 429 and **not** an HTTP 200 carrying
+`{"status": "fail"}` — the hypothesis that shaped the original bug report. All 50 requests in that
+run's ring buffer, the fatal redirect included, classified `clean`, because the only URL markers
+were `/accounts/login` and Facebook's while the redirect target is the bare domain root. That is why
+the back-off never engaged: `delay == floor` on every observation, the volume ramp carrying the
+whole run alone.
+
+`gallerydl/signatures.py` holds the rules as **data** — a per-platform `(name, tier, predicate)`
+table — so the live sensor and the reported reason cannot drift, and so a Meta wording change is a
+one-line edit. Four tiers, and the split is the point: `THROTTLE` backs off and keeps going,
+`TERMINAL` stops (retrying into a checkpoint extends the block and gallery-dl has already raised
+`AbortExtraction` by then), `CLEAN` may advance the streak, and **`UNKNOWN` must never advance it** —
+"we could not tell" is not evidence of health, and treating it as such was half of why the old
+controller could not react. Rules marked OBSERVED came from that capture; the rest are carried
+because `errors.py` already matches the same wording on stderr, which keeps the two sensors aligned.
+An unrecognised platform runs **every** table rather than none: failing toward detection, and safe
+because the rules are host- and marker-scoped.
+
 **A login wall is classified, and rate-limiting wins the tie.** `errors.py:detect_login_wall`
 matches gallery-dl's own `AuthRequired` wording and `_annotate_failure` promotes it to
 `reason: login-required`. It is checked *after* `detect_rate_limit`: Facebook's block page also

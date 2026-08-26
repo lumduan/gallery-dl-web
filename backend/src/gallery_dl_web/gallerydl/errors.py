@@ -39,6 +39,17 @@ _RATE_LIMIT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
         "raising the sleep-request range for this platform.",
     ),
     (
+        # OBSERVED 2026-08-26. Instagram's throttle is a 302 to the bare home page, and gallery-dl
+        # turns it into this exact wording (instagram.py:186). Without this the operator got
+        # `reason: dl-failed` plus a raw traceback for what is simply a rate limit -- the run had
+        # done 859 downloads in 885 s, and the only useful action is to wait.
+        re.compile(r"HTTP redirect to (?:home|login|challenge) page", re.I),
+        "Instagram redirected the run to its home page, which is how it signals a rate limit — "
+        "it is not a download error. Wait (typically hours), then run the profile again; files "
+        "already downloaded are skipped. Raising the pacing floor in Settings lowers the odds of "
+        "hitting it again.",
+    ),
+    (
         re.compile(r"\bchallenge_required\b|\bcheckpoint_required\b", re.I),
         "The platform is asking this account to complete a security challenge. Log into the site "
         "in a browser, clear the checkpoint, then refresh your cookies in Settings.",

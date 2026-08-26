@@ -61,7 +61,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from gallery_dl_web.gallerydl import telemetry
+from gallery_dl_web.gallerydl import signatures, telemetry
 from gallery_dl_web.gallerydl.errors import detect_rate_limit
 
 # A payload can ask for any ceiling; this is the one it can never exceed. Above roughly this, a
@@ -80,43 +80,11 @@ MAX_EVENTS = 200
 # Smallest delay change worth telling the operator about.
 EVENT_MIN_CHANGE = 0.25
 
-# Only ever scan the front of a body; a Facebook page is 1-3 MB and the marker is not at the end
-# of a 40 MB video either.
-BODY_SCAN_LIMIT = 65536
-
 # gallery-dl's ``util.NullResponse`` status: ``Extractor.request`` returns one instead of raising
-# when ``fatal`` is falsy and every retry was used up. It is a failure, not a clean response.
+# Status and body rules now live in ``signatures.py`` as a per-platform table, so the live sensor
+# and the operator-facing reason cannot drift apart. What remains here is the *log* sensor, which
+# has no response to inspect at all.
 #
-# ⚠️ INTENTIONALLY INERT via ``observe``. gallery-dl *constructs* a NullResponse itself
-# (``common.py:258``) and returns it straight out of ``Extractor.request``, so it never traverses
-# ``Session.send`` and the response hook — ``observe``'s only caller — never receives one. Nothing
-# is lost: the real 429/5xx responses that preceded it were each already observed on their own way
-# through the hook, so penalising the NullResponse too would double-count them. Kept because
-# ``observe`` is public and unit-tested directly, and because removing it is a behaviour question
-# rather than a documentation one.
-_NULL_RESPONSE_STATUS = 900
-
-# Statuses that mean "the platform is pushing back", as opposed to "this URL is wrong".
-# 404 is deliberately absent — a missing photo says nothing about our request rate.
-_HARD_PENALTY_STATUS = frozenset({429})
-_SOFT_PENALTY_STATUS = frozenset({403, 503, _NULL_RESPONSE_STATUS})
-
-# Facebook's block page, byte-for-byte as gallery-dl itself matches it in
-# ``facebook.py:photo_page_request_wrapper`` right before raising AbortExtraction. Matching the
-# same bytes lets us report the back-off one step earlier than the traceback.
-# The *prose* gallery-dl then logs ("temporarily blocked from viewing images") is what
-# ``errors.py:_RATE_LIMIT_PATTERNS`` matches on stderr — two views of one event.
-_BLOCK_MARKERS: tuple[bytes, ...] = (
-    b'{"__dr":"CometErrorRoot.react"}',
-    b"temporarily blocked",
-)
-
-# A redirect to any of these means the session is gone or the content is walled.
-_LOGIN_PATH_MARKERS: tuple[str, ...] = (
-    "facebook.com/login",
-    "instagram.com/accounts/login",
-)
-
 # Facebook's soft block, which never shows up as a status code: the photo page comes back 200 and
 # simply has no parseable image URL, and gallery-dl logs this before sleeping `sleep-429` and
 # retrying. See ``facebook.py:extract_set``.
@@ -125,27 +93,6 @@ _LOG_SOFT_PENALTY = ("failed to find photo download url",)
 # Live equivalents of the challenge wording ``util.detect_challenge`` logs. A challenge means stop
 # now, not slow down a little.
 _LOG_HARD_PENALTY = ("cloudflare challenge", "cloudflare captcha", "ddos-guard")
-
-
-def _buffered_body(response: Any) -> bytes:
-    """Bytes already in memory for this response, or ``b""``. Never triggers a read.
-
-    Touching ``response.content`` is not safe here. The sensor runs inside a ``requests`` response
-    hook, and ``Session.send`` dispatches hooks *before* its own ``if not stream: r.content``
-    preload — so the body is unbuffered even for a non-streamed request. On a streamed one
-    (every image download) reading it does not raise either: it silently buffers the whole file
-    into RAM, which no test would notice.
-
-    ``_content_consumed is True and _content is bytes`` is exactly "already buffered": an
-    iter_content-exhausted response sets the flag but leaves ``_content`` as ``False``, and
-    ``util.NullResponse`` has neither attribute.
-    """
-    if getattr(response, "_content_consumed", False) is not True:
-        return b""
-    body = getattr(response, "_content", None)
-    if not isinstance(body, bytes | bytearray):
-        return b""
-    return bytes(body[:BODY_SCAN_LIMIT])
 
 
 class AdaptivePacer:
@@ -187,6 +134,7 @@ class AdaptivePacer:
         # The response hook and the log handler can both fire off the main thread.
         self._lock = threading.RLock()
         self._log = telemetry.RequestLog()
+        self._terminal: str | None = None
         self._delay = self.min_delay
         self._clean = 0
         self._requests = 0
@@ -258,24 +206,79 @@ class AdaptivePacer:
         **A streamed response never advances the clean streak**, and that asymmetry is the whole
         point. Media downloads share ``extractor.session`` (``downloader/common.py:29``) so they
         reach this hook, but they bypass ``Extractor.request`` — so they are neither paced nor
-        counted toward the volume ramp, while arriving ~30x more often than an extractor request on
-        Instagram (~30 images per JSON page). Letting them count as evidence of health meant a hard
-        penalty decayed from the ceiling back to the floor within ~20 downloads, i.e. *inside a
-        single page*: the controller could not hold an elevated delay at all, whatever it detected.
-        Their **status is still judged** — a CDN 429 on an image is real pushback and must still
-        penalise. Only the "looked fine, so speed up" conclusion is withheld.
+        counted toward the volume ramp. Verified live: a run at a 20 s floor recorded 12 consecutive
+        clean downloads with the delay unchanged, where before the fix the tenth would have divided
+        it by ``growth``. Their **status is still judged** — a CDN 429 on an image is real pushback.
+        Only the "looked fine, so speed up" conclusion is withheld.
+
+        **UNKNOWN is not CLEAN.** A response we were entitled to read and could not classify leaves
+        the streak exactly where it was. Treating "we could not tell" as evidence of health is half
+        of why the controller could not react at all.
         """
-        reason = self._classify(response, streamed=streamed)
-        self._record(response, streamed=streamed, reason=reason)
-        if reason is None:
+        tier, rule = self._classify(response, streamed=streamed)
+        self._record(response, streamed=streamed, tier=tier, rule=rule)
+
+        if tier is signatures.Tier.CLEAN:
             if not streamed:
                 self.clean()
-        elif reason in ("http-429", "block-page", "login-redirect"):
-            self.penalize(reason, hard=True)
-        else:
-            self.penalize(reason)
+            return
+        if tier is signatures.Tier.UNKNOWN:
+            return  # neutral: neither evidence of health nor of pushback
 
-    def _record(self, response: Any, *, streamed: bool, reason: str | None) -> None:
+        reason = rule or tier.value
+        self._emit_pushback(tier, reason, response, streamed=streamed)
+        if tier is signatures.Tier.TERMINAL:
+            # Straight to the ceiling and hold. Backing off cannot recover a block — gallery-dl has
+            # already raised AbortExtraction by now — but the run may still have queued work in
+            # flight, and nothing about this response justifies speeding back up.
+            with self._lock:
+                self._terminal = reason
+            self.penalize(reason, hard=True)
+            return
+        self.penalize(reason, hard=rule == "http-429")
+
+    @property
+    def terminal_reason(self) -> str | None:
+        """The rule that judged the run unrecoverable, if one did.
+
+        Read by the worker so a block is reported as a rate limit rather than as whatever traceback
+        gallery-dl happened to raise on its way out.
+        """
+        with self._lock:
+            return self._terminal
+
+    def _emit_pushback(
+        self, tier: signatures.Tier, rule: str, response: Any, *, streamed: bool
+    ) -> None:
+        """Tell the operator WHY the delay moved, not just that it did.
+
+        Separate from the ``pacing`` event on purpose: that one reports the delay changing and is
+        rate-limited to at most one per 5 s, which is right for a ramp climbing in millisecond steps
+        and wrong for "the platform just threw us out". A pushback is rare by nature, so it is
+        emitted every time — but it still shares ``MAX_EVENTS``, because ``JobState.events`` is a
+        bounded deque that ``media_paths()`` reads ``file`` events back out of.
+        """
+        if self._emit is None or not self._should_emit():
+            return
+        _ctype, body = telemetry.capture_body(response, streamed=streamed)
+        with contextlib.suppress(Exception):
+            self._emit(
+                {
+                    "type": "pushback",
+                    "platform": self._platform,
+                    "tier": tier.value,
+                    "rule": rule,
+                    "delay": round(self._delay, 2),
+                    "requests": self._requests,
+                    # Already redacted and capped at 500 B by `capture_body`; carries no cookies,
+                    # no request headers and no query string (contract rule 6).
+                    "body": body[:200],
+                }
+            )
+
+    def _record(
+        self, response: Any, *, streamed: bool, tier: signatures.Tier, rule: str | None
+    ) -> None:
         """Append one telemetry entry describing what the controller just saw."""
         with self._lock:
             delay, floor, ceiling = self._delay, self.floor, self.max_delay
@@ -285,7 +288,8 @@ class AdaptivePacer:
             delay=delay,
             floor=floor,
             ceiling=ceiling,
-            classified=reason or "clean",
+            classified=tier.value,
+            rule=rule,
         )
 
     def telemetry(self) -> list[dict[str, Any]]:
@@ -336,23 +340,26 @@ class AdaptivePacer:
 
     # -- internals ---------------------------------------------------------------------------
 
-    def _classify(self, response: Any, *, streamed: bool) -> str | None:
-        """The penalty reason for this response, or None if it looked healthy."""
+    def _classify(self, response: Any, *, streamed: bool) -> tuple[signatures.Tier, str | None]:
+        """Judge one response against the platform's signature table.
+
+        The body is read here, not in ``telemetry``: for a non-streamed response ``requests`` is
+        about to buffer it anyway (``sessions.py:827``, 36 lines after the hook dispatches), so the
+        read costs nothing and changes nothing. On a streamed one it would pull a whole video into
+        RAM, which is why the ``stream`` kwarg — not ``response.raw.closed``, which is False for
+        both — decides.
+        """
         status = getattr(response, "status_code", None)
-        if isinstance(status, int):
-            if status in _HARD_PENALTY_STATUS:
-                return "http-429"
-            if status in _SOFT_PENALTY_STATUS:
-                return f"http-{status}"
-
         url = getattr(response, "url", None)
-        if isinstance(url, str) and any(m in url for m in _LOGIN_PATH_MARKERS):
-            return "login-redirect"
-
-        body = b"" if streamed else _buffered_body(response)
-        if body and any(m in body for m in _BLOCK_MARKERS):
-            return "block-page"
-        return None
+        ctype, body = telemetry.capture_body(response, streamed=streamed)
+        obs = signatures.Observation(
+            status=status if isinstance(status, int) else None,
+            url=url if isinstance(url, str) else "",
+            content_type=ctype,
+            body=body,
+            streamed=streamed,
+        )
+        return signatures.classify(self._platform, obs)
 
     def _apply(self, value: float, reason: str) -> None:
         new = min(self.max_delay, max(0.0, value))

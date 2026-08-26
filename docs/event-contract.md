@@ -22,6 +22,7 @@ Both sides must honor it; the TS mirror lives in `frontend/src/lib/events.ts`.
 | `progress`  | Running counts (manager-emitted, job-level/monotonic across retries), after each `file` | `downloaded`, `skipped`, `failed` |
 | `heartbeat` | Worker liveness while gallery-dl is silent (non-terminal) | `beat`, `elapsed`                    |
 | `pacing`    | The adaptive request delay changed (non-terminal) | `platform`, `delay`, `previous`, `reason`, `requests` |
+| `pushback`  | A platform pushback signature matched (non-terminal) | `platform`, `tier` (`throttle`\|`terminal`), `rule`, `delay`, `requests`, `body` |
 | `pacing-telemetry` | The worker was SIGTERMed and flushed its request ring buffer (non-terminal) | `reason` (`terminated`), `pacing_telemetry` |
 | `stalled`   | No **file** event within the progress deadline (non-terminal) | `attempt`, `threshold`, `phase` (`warmup` \| `download`), `since_last_file`? |
 | `retrying`  | The stalled/exit worker was killed and a fresh one will spawn (non-terminal) | `attempt`, `reason` (`stalled` \| `worker-exited`) |
@@ -115,6 +116,19 @@ Both sides must honor it; the TS mirror lives in `frontend/src/lib/events.ts`.
     is host + path only, because Instagram signs media URLs in the query; `body` is a redacted
     500-byte prefix captured only for JSON/HTML responses, and never read from a streamed one.
     The key is absent when nothing was observed, and in `fixed` mode (no pacer is installed).
+12c. **`pushback` reports WHY, where `pacing` reports WHAT.** `pacing` says the delay moved and is
+    rate-limited to one per 5 s — right for a ramp climbing in millisecond steps, wrong for "the
+    platform just threw us out". A pushback is rare by nature and is emitted every time a signature
+    matches, though it still shares `pacing`'s 200-event budget for the deque reason in rule 12.
+    `tier` is `throttle` (transient — back off and keep going) or `terminal` (stop; retrying into a
+    checkpoint extends the block). `rule` names the signature, e.g. `ig-redirect-root`.
+    ⚠️ **Instagram's block is a 302 to the bare home page**, captured 2026-08-26 after 859 downloads
+    and 885 s. It is not a 429 and not an HTTP 200 carrying `{"status": "fail"}`. Before the
+    signature table, all 50 requests in that run's ring buffer — the fatal redirect included —
+    classified `clean`, which is why the back-off never engaged.
+    `body` is a redacted ≤200-byte prefix. Per rule 6 it carries no cookie values, no request
+    headers and no URL query string; `pushback` carries no URL at all.
+
 13. **Pause is a real process suspension**, driven by `POST /api/jobs/{id}/pause`. The manager
     SIGSTOPs the worker, so gallery-dl keeps its place in the profile walk and no `heartbeat`
     arrives until it resumes. The concurrency slot is handed back — that is the point, a waiting

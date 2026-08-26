@@ -7,6 +7,7 @@ export type JobEventType =
   | "progress"
   | "heartbeat"
   | "pacing"
+  | "pushback"
   | "pacing-telemetry"
   | "stalled"
   | "retrying"
@@ -28,6 +29,7 @@ export const JOB_EVENT_TYPES: JobEventType[] = [
   "progress",
   "heartbeat",
   "pacing",
+  "pushback",
   "pacing-telemetry",
   "stalled",
   "retrying",
@@ -107,6 +109,15 @@ export interface JobEvent {
   previous?: number;
   requests?: number;
   platform?: string;
+  /**
+   * pushback only: a platform pushback signature matched. `tier` decides what it means —
+   * `throttle` is transient (backed off, still running), `terminal` means the run is over and
+   * retrying would extend the block. `rule` names the signature, e.g. `ig-redirect-root`.
+   * `body` is a redacted <=200-byte response prefix; it carries no cookies and no URL.
+   */
+  tier?: "throttle" | "terminal";
+  rule?: string;
+  body?: string;
   /** resumed only: how long the job was paused, in seconds. */
   paused_for?: number;
   /**

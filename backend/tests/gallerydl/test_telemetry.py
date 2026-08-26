@@ -269,7 +269,9 @@ def test_the_terminal_event_carries_the_ring_buffer(
     entries = terminal["pacing_telemetry"]
     assert len(entries) == 1
     assert entries[0]["status"] == 429
-    assert entries[0]["classified"] == "http-429"
+    # `classified` is the TIER; the rule name that matched lives in `rule`.
+    assert entries[0]["classified"] == "throttle"
+    assert entries[0]["rule"] == "http-429"
 
 
 def test_a_crashing_job_still_carries_the_ring_buffer(
