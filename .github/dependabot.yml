@@ -72,6 +72,34 @@ updates:
         patterns: ["*"]
         update-types: ["minor", "patch"]
 
+  # ---- pre-commit hooks -----------------------------------------------------------------------
+  # Note the ecosystem value is "pre-commit" with a HYPHEN. dependabot-core's directory is
+  # `pre_commit` and it registers internally as `pre_commit`, but the YAML value is the hyphenated
+  # form -- the same split as `github_actions` -> `github-actions`. It is in the standard enum, so
+  # it needs no `enable-beta-ecosystems`.
+  #
+  # WHY THIS MATTERS HERE: backend/.pre-commit-config.yaml pins its own ruff and mypy, entirely
+  # independently of pyproject.toml, and they had diverged badly -- the hooks pinned ruff v0.6.9 and
+  # mypy v1.11.2 while uv.lock resolved ruff 0.15.22 and mypy 2.3.0, a full major apart. A green
+  # pre-commit run therefore said nothing about whether CI would pass, which is the opposite of what
+  # a pre-commit hook is for.
+  #
+  # ⚠️ This reduces the drift; it does not couple the two. Dependabot moves the hook revs toward
+  # latest and uv.lock within what pyproject.toml allows, but it has no idea the two should agree.
+  # If they need to match exactly, that is a check, not a config option.
+  - package-ecosystem: "pre-commit"
+    directory: "/backend"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore(deps-dev)"
+    groups:
+      pre-commit-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
   # ---- Container base images ------------------------------------------------------------------
   # backend/Dockerfile: ghcr.io/astral-sh/uv:python3.12-bookworm-slim + python:3.12-slim
   # frontend/Dockerfile: node:24-alpine
