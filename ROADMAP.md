@@ -119,7 +119,8 @@ independently.
 ### 4 · Integrate and ship — ✅ DONE
 - [x] `docker-compose.yml` (prod, builds from source) + `docker-compose.dev.yml` (hot-reload overlay)
 - [x] GitHub Actions: `ci.yml` (backend + frontend quality), `docker-publish.yml` (ghcr on tag),
-      `security.yml` (weekly bandit + pip-audit)
+      `security.yml` (bandit + pip-audit — on dependency PRs, push to main, and weekly; the
+      runtime closure gates, the dev toolchain is informational)
 - [x] Both images build; full pipeline smoke-tested end-to-end (frontend → catch-all proxy →
       backend → worker subprocess → gallery-dl → JSON-lines → SSE → frontend), verified with a
       fake cookie (job correctly reaches `failed/dl-failed` on the auth wall)
