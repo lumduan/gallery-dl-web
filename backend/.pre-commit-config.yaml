@@ -1,14 +1,27 @@
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.6.9
+    rev: v0.15.22
     hooks:
-      - id: ruff
+      - id: ruff-check
         args: [--fix]
       - id: ruff-format
 
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.11.2
+    rev: v2.3.0
     hooks:
+      # ⚠️ THIS HOOK CHECKS NOTHING, AND HAS NEVER CHECKED ANYTHING. pre-commit passes paths
+      # relative to the GIT ROOT, so the files here are `backend/src/...`; `^src/` matches zero of
+      # them (36 files match `^backend/src/`, 0 match `^src/`). It reports "no files to check /
+      # Skipped" on every run, which reads as success.
+      #
+      # It is left inert rather than repointed, deliberately: with `additional_dependencies: []`
+      # mypy runs isolated and cannot see fastapi, so simply fixing the pattern turns a silent
+      # no-op into 34 `untyped-decorator` errors on the route modules — every `@router.get`. CI's
+      # `uv run mypy src` passes because it runs WITH the project's dependencies installed.
+      #
+      # The real fix is a `repo: local` hook shelling out to the same `uv run mypy src` that CI
+      # runs, which also makes it undriftable by construction. That is a behaviour change to the
+      # dev workflow, so it wants its own decision rather than riding along with a version bump.
       - id: mypy
         args: [--strict, --ignore-missing-imports]
         additional_dependencies: []

@@ -199,4 +199,3 @@ export async function deleteProfile(platform: string, name: string): Promise<voi
     throw new Error(`delete failed: ${res.status}`);
   }
 }
-
