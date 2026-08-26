@@ -339,3 +339,50 @@ async def test_gc_leaves_a_freshly_paused_job_alone(
     await job_manager.gc()
     assert job_manager.get(jid).status is JobStatus.PAUSED
     await job_manager.cancel(jid)
+
+
+async def test_a_cancel_captures_the_workers_parting_telemetry(
+    job_manager: Any, fake_spawn: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The evidence a killed worker flushes must actually reach the job's history.
+
+    THE BUG THIS EXISTS FOR: `cancel` sets `cancel_requested` BEFORE it signals, so
+    `_stream_with_stall` returns and cancels its pending `readline` while the worker is still
+    being asked to die. The worker then wrote its ring buffer into a pipe with nobody reading —
+    silently, and on the stall-kill path too, which is exactly when the record matters most.
+
+    The original SIGTERM test passed against this because it drove the worker in-process with
+    capsys: it proved the line gets written, never that anyone receives it. This drives the real
+    manager instead.
+    """
+    from gallery_dl_web.jobs import manager as _mgr
+
+    flush = json.dumps(
+        {
+            "type": "pacing-telemetry",
+            "reason": "terminated",
+            "pacing_telemetry": [{"i": 0, "status": 200, "body": '{"status":"fail"}'}],
+        }
+    )
+    monkeypatch.setattr(
+        _mgr,
+        "spawn_worker",
+        # First line slow so the job is still alive to cancel; everything after it instant, so the
+        # parting flush is readable well inside the (deliberately tiny) test kill-grace.
+        fake_spawn([json.dumps({"type": "started"})], delays=[0.3, 0.0], on_terminate=[flush]),
+    )
+
+    job_id = await job_manager.create_job("https://www.instagram.com/x/", "instagram")
+    await asyncio.sleep(0.1)
+    await job_manager.cancel(job_id)
+    await job_manager.wait_for(job_id)
+
+    state = job_manager.get(job_id)
+    types = [e.get("type") for e in state.events]
+    assert "pacing-telemetry" in types, (
+        f"the worker's parting flush never reached the history: {types}"
+    )
+    # Ordering still holds: the terminal event is last (contract rule 1).
+    assert types[-1] == "cancelled"
+    entry = next(e for e in state.events if e.get("type") == "pacing-telemetry")
+    assert entry["pacing_telemetry"][0]["body"] == '{"status":"fail"}'
