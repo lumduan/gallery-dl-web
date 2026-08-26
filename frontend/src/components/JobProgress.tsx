@@ -27,6 +27,10 @@ function describe(ev: JobEvent): string {
       return `${PACING_ROUTINE.includes(ev.reason ?? "") ? "⏱" : "🐢"} pacing ${
         ev.previous ?? 0
       }s → ${ev.delay ?? 0}s (${ev.reason ?? "?"})`;
+    case "pacing-telemetry":
+      // Non-terminal: the manager killed the worker, and it flushed its request record on the way
+      // out so the run can be diagnosed without repeating it.
+      return `🔍 saved the last ${ev.pacing_telemetry?.length ?? 0} request(s) for diagnosis`;
     case "stalled":
       return ev.phase === "warmup"
         ? `⏳ no files yet after ${Math.round(ev.threshold ?? 0)}s (attempt ${ev.attempt ?? 1})`

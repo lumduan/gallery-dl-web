@@ -36,6 +36,17 @@ extraction spawns; a per-instance assignment would silently miss them, exactly a
   is a photo page whose image URL will not parse, and the only in-band evidence is gallery-dl's
   own ``"Failed to find photo download URL"`` warning. Status codes alone are blind to it.
 
+**The hook sees two populations, and only one of them is evidence of health.** Media downloads
+share ``extractor.session``, so they arrive here too — but they bypass ``Extractor.request``, so
+they are neither paced nor counted toward the ramp, and on Instagram they outnumber extractor
+requests ~30:1. Counting them as clean decayed a ceiling-level penalty back to the floor inside a
+single page, which made the controller unable to hold *any* back-off. ``observe`` therefore judges
+their status but withholds ``clean()`` — see its docstring.
+
+Every observation is also recorded to a bounded ring buffer (``telemetry.RequestLog``) that the
+worker flushes into its terminal event, so a run that ends in a block can be diagnosed from what
+the platform actually sent rather than from a guess.
+
 Pure logic plus those three patches — no I/O of its own beyond the injected ``emit`` callback, so
 the whole thing is unit-testable without a network.
 """
@@ -50,6 +61,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from gallery_dl_web.gallerydl import telemetry
 from gallery_dl_web.gallerydl.errors import detect_rate_limit
 
 # A payload can ask for any ceiling; this is the one it can never exceed. Above roughly this, a
@@ -74,6 +86,14 @@ BODY_SCAN_LIMIT = 65536
 
 # gallery-dl's ``util.NullResponse`` status: ``Extractor.request`` returns one instead of raising
 # when ``fatal`` is falsy and every retry was used up. It is a failure, not a clean response.
+#
+# ⚠️ INTENTIONALLY INERT via ``observe``. gallery-dl *constructs* a NullResponse itself
+# (``common.py:258``) and returns it straight out of ``Extractor.request``, so it never traverses
+# ``Session.send`` and the response hook — ``observe``'s only caller — never receives one. Nothing
+# is lost: the real 429/5xx responses that preceded it were each already observed on their own way
+# through the hook, so penalising the NullResponse too would double-count them. Kept because
+# ``observe`` is public and unit-tested directly, and because removing it is a behaviour question
+# rather than a documentation one.
 _NULL_RESPONSE_STATUS = 900
 
 # Statuses that mean "the platform is pushing back", as opposed to "this URL is wrong".
@@ -166,6 +186,7 @@ class AdaptivePacer:
 
         # The response hook and the log handler can both fire off the main thread.
         self._lock = threading.RLock()
+        self._log = telemetry.RequestLog()
         self._delay = self.min_delay
         self._clean = 0
         self._requests = 0
@@ -232,14 +253,44 @@ class AdaptivePacer:
     # -- signals -----------------------------------------------------------------------------
 
     def observe(self, response: Any, *, streamed: bool = False) -> None:
-        """Feed one response to the controller. Called once per adapter send."""
+        """Feed one response to the controller. Called once per adapter send.
+
+        **A streamed response never advances the clean streak**, and that asymmetry is the whole
+        point. Media downloads share ``extractor.session`` (``downloader/common.py:29``) so they
+        reach this hook, but they bypass ``Extractor.request`` — so they are neither paced nor
+        counted toward the volume ramp, while arriving ~30x more often than an extractor request on
+        Instagram (~30 images per JSON page). Letting them count as evidence of health meant a hard
+        penalty decayed from the ceiling back to the floor within ~20 downloads, i.e. *inside a
+        single page*: the controller could not hold an elevated delay at all, whatever it detected.
+        Their **status is still judged** — a CDN 429 on an image is real pushback and must still
+        penalise. Only the "looked fine, so speed up" conclusion is withheld.
+        """
         reason = self._classify(response, streamed=streamed)
+        self._record(response, streamed=streamed, reason=reason)
         if reason is None:
-            self.clean()
+            if not streamed:
+                self.clean()
         elif reason in ("http-429", "block-page", "login-redirect"):
             self.penalize(reason, hard=True)
         else:
             self.penalize(reason)
+
+    def _record(self, response: Any, *, streamed: bool, reason: str | None) -> None:
+        """Append one telemetry entry describing what the controller just saw."""
+        with self._lock:
+            delay, floor, ceiling = self._delay, self.floor, self.max_delay
+        self._log.record(
+            response,
+            streamed=streamed,
+            delay=delay,
+            floor=floor,
+            ceiling=ceiling,
+            classified=reason or "clean",
+        )
+
+    def telemetry(self) -> list[dict[str, Any]]:
+        """The last ``telemetry.LOG_SIZE`` requests, oldest first. Safe to embed in an event."""
+        return self._log.snapshot()
 
     def observe_exception(self, exc: BaseException) -> None:
         """Classify an error raised out of ``Extractor.request``.

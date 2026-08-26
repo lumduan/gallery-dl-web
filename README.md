@@ -233,10 +233,18 @@ delay itself, is why Facebook used to be so much slower:
 
 So pacing is **adaptive by default**. A run starts at the floor and only slows down on evidence the
 platform is pushing back — a 429, a 403/503, a redirect to a login page, Facebook's block page, or
-gallery-dl's own warnings — then speeds back up after a clean streak. Separately, the floor **rises
+gallery-dl's own warnings — then speeds back up after a clean streak. Only *extractor* requests
+count toward that streak: image downloads are unpaced and outnumber them ~30:1 on Instagram, so
+letting them count meant a back-off decayed away before the current page had even finished. Their
+status is still watched — a CDN 429 on an image is real pushback. Separately, the floor **rises
 as a run gets long**, because that is when a block actually happens: the one ever observed came
 ~767 images into a single Facebook run. A short profile stays fast; a thousand-image one ends up
 more careful than the old fixed delay was.
+
+When a run ends — or is killed by the stall detector — the worker attaches a record of the last 50
+requests it observed (status, content type, and a redacted 500-byte body prefix) to the job's final
+event, so a block can be diagnosed without reproducing it. It carries no cookies, no request
+headers, and no URL query strings.
 
 Three places to change it, each overriding the one below:
 

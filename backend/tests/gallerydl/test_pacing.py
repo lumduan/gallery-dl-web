@@ -15,11 +15,19 @@ from gallery_dl_web.gallerydl import pacing
 
 
 class FakeResponse:
-    """A response as the ``requests`` hook sees it.
+    """A response as the ``requests`` hook actually sees it.
 
-    ``content`` is a property that raises: the sensor must read the *buffered* bytes via the
-    private pair, never trigger a read. A regression has to be a hard failure, not a silent
-    whole-file-into-RAM buffer that no assertion would notice.
+    ``consumed`` defaults to **False**, which is what production looks like and what this fixture
+    used to get wrong. ``Session.send`` dispatches response hooks at ``sessions.py:791`` and only
+    buffers the body at ``sessions.py:827``, so at hook time nothing is buffered — a fixture that
+    defaulted the flag to ``True`` made ``pacing._buffered_body``'s block-page branch look reachable
+    when it never fires against a live server. Pass ``consumed=True`` explicitly to model a body
+    that really is already in memory.
+
+    ``content`` raises unless ``allow_read`` is set: ``_buffered_body`` must never trigger a read.
+    ``telemetry.capture_body`` may, but only for a non-streamed response — tests that exercise it
+    opt in, so an accidental read anywhere else is still a hard failure rather than a silent
+    whole-file-into-RAM buffer.
     """
 
     def __init__(
@@ -27,17 +35,24 @@ class FakeResponse:
         status: int = 200,
         url: str = "https://x/",
         body: bytes | None = b"ok",
-        consumed: bool = True,
+        consumed: bool = False,
+        headers: dict[str, str] | None = None,
+        allow_read: bool = False,
     ) -> None:
         self.status_code = status
         self.reason = "Fake"
         self.url = url
+        self.headers = headers or {}
         self._content_consumed = consumed
         self._content: Any = b"" if body is None else body
+        self._allow_read = allow_read
 
     @property
     def content(self) -> bytes:
-        raise AssertionError("the pacer must never read .content")
+        if not self._allow_read:
+            raise AssertionError("the pacer must never read .content")
+        body = self._content
+        return body if isinstance(body, bytes) else b""
 
 
 def _clock() -> Any:
@@ -186,8 +201,10 @@ def test_next_delay_is_a_zero_arg_float_callable() -> None:
         (FakeResponse(900), 3.0),  # util.NullResponse — retries exhausted
         (FakeResponse(302, url="https://www.facebook.com/login/?next=x"), 30.0),
         (FakeResponse(200, url="https://www.instagram.com/accounts/login/"), 30.0),
-        (FakeResponse(200, body=b'x{"__dr":"CometErrorRoot.react"}y'), 30.0),
-        (FakeResponse(200, body=b"You have been temporarily blocked"), 30.0),
+        # `consumed=True` is REQUIRED for these two, and that requirement is the bug: see
+        # test_the_block_page_scan_cannot_fire_at_hook_time below.
+        (FakeResponse(200, body=b'x{"__dr":"CometErrorRoot.react"}y', consumed=True), 30.0),
+        (FakeResponse(200, body=b"You have been temporarily blocked", consumed=True), 30.0),
         # Buffered flag set but body still `False` — an iter_content-exhausted response.
         (FakeResponse(200, body=None, consumed=False), 1.0),
     ],
@@ -198,11 +215,58 @@ def test_observe_classifies_each_signal(response: FakeResponse, expected: float)
     assert p.delay == expected
 
 
+def test_the_block_page_scan_cannot_fire_at_hook_time() -> None:
+    """The block-page branch is unreachable in production, and this pins that fact.
+
+    ``_buffered_body`` only returns bytes when ``_content_consumed is True``. ``Session.send``
+    dispatches response hooks at ``sessions.py:791`` and buffers the body at ``sessions.py:827``, so
+    the flag is always ``False`` when the hook runs — the same block page that scores 30.0 with
+    ``consumed=True`` above is invisible with the production default.
+
+    Facebook is unaffected in practice: its real sensor is the log handler
+    (``test_the_log_sensor_catches_facebooks_http_200_soft_block``). Instagram had no equivalent,
+    which is why its HTTP-200 throttles went unnoticed. The body-level matcher that fixes this
+    lands with the signature table; until then this asserts the gap rather than hiding it.
+    """
+    p = _pacer()
+    p.observe(FakeResponse(200, body=b'x{"__dr":"CometErrorRoot.react"}y'))
+    assert p.delay == 1.0, "if this now backs off, the body matcher landed — update this test"
+
+
 def test_a_streamed_body_is_never_scanned() -> None:
     """An image download is streamed; scanning it would buffer the whole file into RAM."""
     p = _pacer()
     p.observe(FakeResponse(200, body=b'{"__dr":"CometErrorRoot.react"}'), streamed=True)
     assert p.delay == 1.0
+
+
+def test_streamed_responses_never_advance_the_clean_streak() -> None:
+    """THE regression this PR exists for.
+
+    Media downloads reach the hook (they share ``extractor.session``) but bypass
+    ``Extractor.request``, so they are neither paced nor counted toward the ramp — and on Instagram
+    there are ~30 of them per JSON page. When they counted as clean, a ceiling-level penalty decayed
+    back to the floor within ~20 of them, i.e. *inside a single page*, so the controller could never
+    hold a back-off no matter what it detected.
+
+    Before the fix this asserted 1.0 (fully decayed after 30 downloads). It now stays at 30.0.
+    """
+    p = _pacer()
+    p.penalize("http-429", hard=True)
+    assert p.delay == 30.0
+
+    for _ in range(30):  # one page's worth of images
+        p.observe(FakeResponse(200), streamed=True)
+    assert p.delay == 30.0, "an unpaced, uncounted download must not read as evidence of health"
+
+
+def test_non_streamed_responses_still_decay_the_delay() -> None:
+    """The fix is an asymmetry, not a disabling: real extractor requests still recover."""
+    p = _pacer(decay_after=10)
+    p.penalize("http-429", hard=True)
+    for _ in range(10):
+        p.observe(FakeResponse(200))
+    assert p.delay == 10.0  # 30 / growth
 
 
 def test_a_streamed_429_is_still_seen() -> None:
