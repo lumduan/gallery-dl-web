@@ -242,9 +242,17 @@ def _install_sigterm_flush() -> Callable[[], None]:
 
     def _on_term(signum: int, frame: Any) -> None:
         with contextlib.suppress(Exception):  # a broken stdout must not block the kill
-            fields = _telemetry_fields()
-            if fields:
-                _emit({"type": "pacing-telemetry", "reason": "terminated", **fields})
+            # Emitted UNCONDITIONALLY, empty buffer included. A missing event otherwise means
+            # either "the handler never ran" or "there was nothing to report", and those need
+            # very different fixes -- an ambiguity that cost a live debugging round.
+            _emit(
+                {
+                    "type": "pacing-telemetry",
+                    "reason": "terminated",
+                    "pacing_telemetry": [],
+                    **_telemetry_fields(),
+                }
+            )
         if callable(previous):
             previous(signum, frame)
         raise SystemExit(128 + signum)

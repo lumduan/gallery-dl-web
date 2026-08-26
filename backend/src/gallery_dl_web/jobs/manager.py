@@ -773,6 +773,15 @@ class JobManager:
             for task in (read, control):
                 if task is not None:
                     task.cancel()
+                    # AWAIT the cancellation, do not just request it. `task.cancel()` only
+                    # schedules a CancelledError; until the task actually runs again the
+                    # StreamReader still has `_waiter` set and refuses the next reader with
+                    # "readuntil() called while another coroutine is already waiting for incoming
+                    # data". That is what silently defeated `_drain_parting_telemetry`: the
+                    # worker's parting flush was written to a pipe the manager could no longer
+                    # read from.
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await task
 
     async def _await_resume(
         self, state: JobState, proc: asyncio.subprocess.Process
@@ -910,8 +919,14 @@ class JobManager:
             try:
                 raw = await asyncio.wait_for(stdout.readline(), timeout=remaining)
             except TimeoutError:
+                logger.info("job %s: no parting telemetry within the drain budget", state.id)
                 return
             except Exception:  # noqa: BLE001 — a torn-down pipe must not fail a cancel
+                # LOGGED, not swallowed. A silent give-up here is indistinguishable from "the
+                # worker had nothing to say", and that ambiguity is what made this bug expensive:
+                # the read loop's `finally` cancels a pending readline, which can leave the
+                # StreamReader unusable for a second reader.
+                logger.warning("job %s: parting-telemetry drain failed", state.id, exc_info=True)
                 return
             if not raw:
                 return  # EOF: the worker is gone
