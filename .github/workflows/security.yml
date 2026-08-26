@@ -9,6 +9,11 @@ on:
       - "backend/pyproject.toml"
       - "backend/uv.lock"
       - ".github/workflows/security.yml"
+  pull_request:
+    paths:
+      - "backend/pyproject.toml"
+      - "backend/uv.lock"
+      - ".github/workflows/security.yml"
   workflow_dispatch:
 
 jobs:
@@ -45,4 +50,20 @@ jobs:
           enable-cache: true
           cache-dependency-glob: backend/uv.lock
       - run: uv sync --frozen --all-groups
-      - run: uv run pip-audit
+
+      # Gating: the runtime closure — exactly what backend/Dockerfile ships (it
+      # syncs --no-dev). --require-hashes implies --no-deps; --disable-pip means
+      # the audit never executes pip, which is the package under advisory here.
+      # Exported to $RUNNER_TEMP so the generated file stays outside the repo.
+      - name: Audit runtime dependencies
+        run: |
+          uv export --frozen --no-dev --no-emit-project \
+            --format requirements.txt -o "$RUNNER_TEMP/requirements-runtime.txt"
+          uv run pip-audit --require-hashes --disable-pip \
+            -r "$RUNNER_TEMP/requirements-runtime.txt"
+
+      # Informational: the dev/CI toolchain never reaches the image, so an
+      # advisory here is reported (failed step, green job), not a gate.
+      - name: Audit dev toolchain
+        continue-on-error: true
+        run: uv run pip-audit
