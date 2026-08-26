@@ -6,26 +6,32 @@ repos:
         args: [--fix]
       - id: ruff-format
 
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v2.3.1
+  # mypy is a LOCAL hook running the project's own environment, not a pinned mirror, and that is
+  # deliberate on two counts.
+  #
+  # 1. A mirrored hook installs mypy in an isolated venv. With `additional_dependencies: []` it
+  #    could not see fastapi, so `--strict` reported 34 `untyped-decorator` errors on every
+  #    `@router.get` — the hook was only ever "green" because its `files: ^src/` matched nothing
+  #    (pre-commit passes paths relative to the GIT ROOT, so they are `backend/src/...`; 36 files
+  #    match `^backend/src/`, 0 match `^src/`). It reported "no files to check / Skipped" on every
+  #    run, which reads as success. Listing every runtime dependency in `additional_dependencies`
+  #    would fix that by duplicating uv.lock — a second source of truth that drifts.
+  #
+  # 2. It runs the EXACT command ci.yml runs, in the same environment, reading the same
+  #    `[tool.mypy]` config. There is no version to keep in step, so it cannot drift by
+  #    construction — strictly stronger than tests/test_hook_pins.py's version comparison, which is
+  #    why mypy is not in that check's COUPLED table.
+  #
+  # `--directory backend` because pre-commit runs from the git root. `pass_filenames: false`
+  # because mypy needs the whole package for inference, exactly as CI invokes it.
+  - repo: local
     hooks:
-      # ⚠️ THIS HOOK CHECKS NOTHING, AND HAS NEVER CHECKED ANYTHING. pre-commit passes paths
-      # relative to the GIT ROOT, so the files here are `backend/src/...`; `^src/` matches zero of
-      # them (36 files match `^backend/src/`, 0 match `^src/`). It reports "no files to check /
-      # Skipped" on every run, which reads as success.
-      #
-      # It is left inert rather than repointed, deliberately: with `additional_dependencies: []`
-      # mypy runs isolated and cannot see fastapi, so simply fixing the pattern turns a silent
-      # no-op into 34 `untyped-decorator` errors on the route modules — every `@router.get`. CI's
-      # `uv run mypy src` passes because it runs WITH the project's dependencies installed.
-      #
-      # The real fix is a `repo: local` hook shelling out to the same `uv run mypy src` that CI
-      # runs, which also makes it undriftable by construction. That is a behaviour change to the
-      # dev workflow, so it wants its own decision rather than riding along with a version bump.
       - id: mypy
-        args: [--strict, --ignore-missing-imports]
-        additional_dependencies: []
-        files: ^src/
+        name: mypy --strict (backend/src, project env)
+        entry: uv run --directory backend mypy src
+        language: system
+        pass_filenames: false
+        files: ^backend/src/.*\.py$
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.6.0

@@ -88,15 +88,20 @@ updates:
   # form -- the same split as `github_actions` -> `github-actions`. It is in the standard enum, so
   # it needs no `enable-beta-ecosystems`.
   #
-  # WHY THIS MATTERS HERE: backend/.pre-commit-config.yaml pins its own ruff and mypy, entirely
-  # independently of pyproject.toml, and they had diverged badly -- the hooks pinned ruff v0.6.9 and
-  # mypy v1.11.2 while uv.lock resolved ruff 0.15.22 and mypy 2.3.0, a full major apart. A green
-  # pre-commit run therefore said nothing about whether CI would pass, which is the opposite of what
-  # a pre-commit hook is for.
+  # WHY THIS MATTERS HERE: backend/.pre-commit-config.yaml pins its own ruff, independently of
+  # pyproject.toml, and it had diverged badly -- the hooks sat on ruff v0.6.9 and mypy v1.11.2 while
+  # uv.lock resolved 0.15.22 and 2.3.0, a full major apart. A green pre-commit run therefore said
+  # nothing about whether CI would pass, which is the opposite of what a pre-commit hook is for.
   #
-  # ⚠️ This reduces the drift; it does not couple the two. Dependabot moves the hook revs toward
-  # latest and uv.lock within what pyproject.toml allows, but it has no idea the two should agree.
-  # If they need to match exactly, that is a check, not a config option.
+  # ⚠️ Dependabot reduces that drift but cannot close it: it moves the hook rev toward latest and
+  # uv.lock within what pyproject.toml allows, with no idea the two should agree. The closing move
+  # is `backend/tests/test_hook_pins.py`, which fails whenever they disagree -- so the hook bump and
+  # the matching uv.lock bump have to land in ONE commit, since they arrive here as separate PRs
+  # (different ecosystems) and GitHub cannot merge PRs atomically.
+  #
+  # mypy is deliberately absent from all of this: it is a `repo: local` hook running
+  # `uv run --directory backend mypy src`, the exact command ci.yml runs, so it has no version for
+  # Dependabot to track and cannot drift by construction.
   - package-ecosystem: "pre-commit"
     directory: "/backend"
     schedule:
