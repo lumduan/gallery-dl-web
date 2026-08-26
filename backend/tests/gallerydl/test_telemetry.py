@@ -177,6 +177,47 @@ def test_only_two_response_headers_are_allowlisted() -> None:
     assert SESSION_ID not in json.dumps(_entry(resp))
 
 
+# --- what the masking must and must not eat ------------------------------------------------------
+
+
+def test_a_long_snake_case_key_is_not_a_secret() -> None:
+    """THE regression, from a real capture.
+
+    Instagram's JSON carries keys past 32 characters. The old backstop masked any long token run,
+    so a live body came back as ``"<redacted>":false`` — the KEY eaten, the JSON invalid, and
+    nothing whatsoever protected.
+    """
+    body = '{"can_viewer_reshare_to_your_story":false,"status":"fail"}'
+    out = telemetry._redact(body)
+    assert "can_viewer_reshare_to_your_story" in out
+    assert json.loads(out)["status"] == "fail", "redaction must leave the prefix parseable"
+
+
+@pytest.mark.parametrize(
+    "secret",
+    [
+        "AYc9xQfakevaluenotrealAbCdEfGh12",  # mixed case + digits
+        "deadbeefcafebabe0123456789abcdef",  # lowercase hex
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",  # all caps
+        "abc-def_GHI-jkl_MNO-pqr_STU-vwx1",  # base64url-ish
+    ],
+)
+def test_credential_shaped_tokens_are_still_masked(secret: str) -> None:
+    """Narrowing the rule must not open a hole: anything not a plain identifier still goes."""
+    assert secret not in telemetry._redact(f'{{"t":"{secret}"}}')
+
+
+def test_the_diagnostic_signals_survive_redaction() -> None:
+    """Masking is worthless if it eats the thing we are trying to detect."""
+    for body in (
+        '{"status":"fail","message":"Please wait a few minutes before you try again."}',
+        '{"message":"checkpoint_required","spam":true}',
+        '{"num_results":12,"more_available":true,"items":[]}',
+    ):
+        out = telemetry._redact(body)
+        assert json.loads(out) == json.loads(body), f"redaction altered a clean body: {out}"
+
+
 # --- the ring buffer -----------------------------------------------------------------------------
 
 

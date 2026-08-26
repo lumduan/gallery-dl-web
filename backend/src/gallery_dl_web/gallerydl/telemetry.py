@@ -81,25 +81,49 @@ REDACTED = "<redacted>"
 # valid JSON after masking — the capture is meant to be readable, and a mangled prefix is worth less
 # than a redacted one.
 _KEY_VALUE_RE = re.compile(
-    r'("?)\b(' + "|".join(_SENSITIVE_KEYS) + r')\1\s*([:=])\s*("?)([^"&,}\s]+)\4',
+    r'("?)\b(' + "|".join(_SENSITIVE_KEYS) + r")\1\s*([:=])\s*"
+    # A QUOTED value runs to its closing quote and may contain spaces -- "Bearer <token>" is the
+    # case that matters, and a pattern stopping at whitespace masked the word "Bearer" while
+    # leaving the token behind it.
+    r'(?:"([^"]*)"|([^"&,}\s]+))',
     re.I,
 )
 
-# A long unbroken run of token-ish characters is masked even when its key is not recognised. This
-# over-masks (it also catches media ids), which is the safe direction: telemetry does not need them
-# and a leaked session cookie is unrecoverable. Prose survives it — the wording we care about
-# ("Please wait a few minutes before you try again") contains spaces.
+# A long unbroken run of token-ish characters, masked even when its key is not recognised. This is
+# the BACKSTOP; ``_KEY_VALUE_RE`` above is the primary defence and covers every credential that
+# arrives under a name we know.
 _TOKEN_RE = re.compile(r"\b[A-Za-z0-9_\-]{32,}\b")
+
+# ...but a 32+ character run is not automatically a secret. Instagram's JSON is full of long
+# snake_case KEYS -- a real capture produced ``"<redacted>":false`` where the key
+# ``can_viewer_reshare_to_your_story`` had been eaten, which corrupts the JSON and destroys the
+# diagnostic value of the prefix without protecting anything.
+#
+# An identifier is snake_case: lowercase words joined by underscores. Requiring the underscore is
+# load-bearing -- ``[a-z_]+`` alone also matches a 40-character run of plain lowercase letters,
+# which is a perfectly good secret and was left unmasked until a test caught it.
+_IDENTIFIER_RE = re.compile(r"[a-z]+(?:_[a-z]+)+")
+
+
+def _looks_like_a_secret(token: str) -> bool:
+    """Whether a long token is credential-shaped rather than an identifier."""
+    return _IDENTIFIER_RE.fullmatch(token) is None
 
 
 def _redact(text: str) -> str:
     """Mask credential-shaped content in a captured body prefix."""
 
     def _mask(m: re.Match[str]) -> str:
-        key_q, key, sep, val_q = m.group(1), m.group(2), m.group(3), m.group(4)
+        key_q, key, sep = m.group(1), m.group(2), m.group(3)
+        quoted = m.group(4) is not None
+        val_q = '"' if quoted else ""
         return f"{key_q}{key}{key_q}{sep}{val_q}{REDACTED}{val_q}"
 
-    return _TOKEN_RE.sub(REDACTED, _KEY_VALUE_RE.sub(_mask, text))
+    def _mask_token(m: re.Match[str]) -> str:
+        token = m.group(0)
+        return REDACTED if _looks_like_a_secret(token) else token
+
+    return _TOKEN_RE.sub(_mask_token, _KEY_VALUE_RE.sub(_mask, text))
 
 
 def safe_url(url: Any) -> str:
