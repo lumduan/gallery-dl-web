@@ -53,6 +53,9 @@ _STDERR_TAIL_LINES = 50
 _STDERR_TAIL_CHARS = 2000
 # Let the concurrent stderr drain catch up before quoting it in a failure message.
 _STDERR_SETTLE_SECONDS = 0.25
+# How long to keep reading a killed worker's stdout for its parting telemetry flush. Well under
+# stall_kill_grace_seconds so it can never delay the SIGKILL escalation.
+_FLUSH_DRAIN_SECONDS = 3.0
 
 
 def _new_job_id() -> str:
@@ -264,7 +267,7 @@ class JobManager:
         state.resume_event.set()
         proc = self._procs.get(job_id)
         if proc is not None:
-            await self._kill_worker(proc)
+            await self._kill_worker(proc, state)
             reason, text = "cancelled", "download stopped by the operator"
         else:
             # Never spawned (queued, or paused before its first slot): nothing to kill, and the
@@ -531,7 +534,7 @@ class JobManager:
             stalled = outcome == "stalled"
             warmup = state.file_count == 0
             if stalled:
-                await self._kill_worker(proc)
+                await self._kill_worker(proc, state)
             else:  # eof: worker exited without a terminal event
                 await self._reap(proc)
             await self._stop_drain(drain)
@@ -770,6 +773,15 @@ class JobManager:
             for task in (read, control):
                 if task is not None:
                     task.cancel()
+                    # AWAIT the cancellation, do not just request it. `task.cancel()` only
+                    # schedules a CancelledError; until the task actually runs again the
+                    # StreamReader still has `_waiter` set and refuses the next reader with
+                    # "readuntil() called while another coroutine is already waiting for incoming
+                    # data". That is what silently defeated `_drain_parting_telemetry`: the
+                    # worker's parting flush was written to a pipe the manager could no longer
+                    # read from.
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await task
 
     async def _await_resume(
         self, state: JobState, proc: asyncio.subprocess.Process
@@ -877,8 +889,77 @@ class JobManager:
         threshold = max(floor, s.stall_multiplier * avg) if avg > 0 else floor
         return min(threshold, s.stall_cap_seconds)
 
-    async def _kill_worker(self, proc: asyncio.subprocess.Process) -> None:
-        """SIGTERM, escalate to SIGKILL after the grace period."""
+    async def _drain_parting_telemetry(
+        self, state: JobState, proc: asyncio.subprocess.Process
+    ) -> None:
+        """Forward the ``pacing-telemetry`` the worker flushes on its way out of a SIGTERM.
+
+        **Nothing else is reading by this point, and that is the whole reason this exists.**
+        ``cancel`` sets ``cancel_requested`` *before* it signals, and the stall path returns
+        ``"stalled"`` before ``_run_job`` kills — so in both cases ``_stream_with_stall`` has
+        already returned and its ``finally`` has cancelled the pending ``readline``. Without this
+        the worker writes its evidence into a pipe with no reader, which is precisely the case the
+        flush was added for: a run killed by the stall detector is exactly when the record of what
+        the platform was sending is most worth having.
+
+        Only ``pacing-telemetry`` is forwarded. A terminal event from here would race the one the
+        caller emits immediately afterwards and break the contract's exactly-one-terminal rule.
+        """
+        stdout = proc.stdout
+        if stdout is None:
+            return
+        # Never outlast the SIGKILL escalation this drain sits in front of, and honour a shortened
+        # grace: a cancel must stay responsive, and a queued job is waiting on this slot.
+        budget = min(_FLUSH_DRAIN_SECONDS, max(0.0, self._settings.stall_kill_grace_seconds))
+        deadline = time.monotonic() + budget
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            try:
+                raw = await asyncio.wait_for(stdout.readline(), timeout=remaining)
+            except TimeoutError:
+                logger.info("job %s: no parting telemetry within the drain budget", state.id)
+                return
+            except Exception:  # noqa: BLE001 — a torn-down pipe must not fail a cancel
+                # LOGGED, not swallowed. A silent give-up here is indistinguishable from "the
+                # worker had nothing to say", and that ambiguity is what made this bug expensive:
+                # the read loop's `finally` cancels a pending readline, which can leave the
+                # StreamReader unusable for a second reader.
+                logger.warning("job %s: parting-telemetry drain failed", state.id, exc_info=True)
+                return
+            if not raw:
+                return  # EOF: the worker is gone
+            try:
+                event = json.loads(raw.decode("utf-8", errors="replace"))
+            except (json.JSONDecodeError, ValueError):
+                continue  # gallery-dl noise, not ours
+            if not isinstance(event, dict):
+                continue
+            etype = event.get("type")
+            # Anything still in the pipe was written before the worker died and is real. Forwarding
+            # only the telemetry would DISCARD it — and a dropped `file` event is not cosmetic:
+            # `media_paths()` reads them back out of the history to build the zip and reconcile the
+            # profile, so the file would vanish from the gallery while sitting on disk.
+            if etype in _TERMINAL_EVENTS:
+                continue  # the caller owns the terminal event; a second would break rule 1
+            if etype == "file":
+                self._record_file(state, event)
+                await self._emit(state, event)
+                await self._emit(state, self._job_progress(state))
+                continue
+            await self._emit(state, event)
+            if etype == "pacing-telemetry":
+                return  # what we came for; the worker has nothing left to say
+
+    async def _kill_worker(
+        self, proc: asyncio.subprocess.Process, state: JobState | None = None
+    ) -> None:
+        """SIGTERM, escalate to SIGKILL after the grace period.
+
+        Pass ``state`` to capture the worker's parting telemetry flush — see
+        ``_drain_parting_telemetry`` for why the ordinary read loop cannot.
+        """
         # A SIGSTOPed process handles nothing until it is continued — SIGTERM would sit pending and
         # proc.wait() would never return. Always continue it first when stopping a paused job.
         if _SIGCONT is not None:
@@ -888,6 +969,8 @@ class JobManager:
             proc.terminate()
         except ProcessLookupError:
             return
+        if state is not None:
+            await self._drain_parting_telemetry(state, proc)
         try:
             await asyncio.wait_for(proc.wait(), timeout=self._settings.stall_kill_grace_seconds)
         except TimeoutError:

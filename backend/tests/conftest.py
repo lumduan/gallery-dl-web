@@ -67,6 +67,10 @@ class _FakeStdout:
         self._index = 0
         self.suspended = False
 
+    def append_lines(self, lines: list[str]) -> None:
+        """Queue more output on an already-running stream (a worker's SIGTERM flush)."""
+        self._lines.extend(ln.encode() for ln in lines)
+
     def _next_delay(self) -> float:
         if self._delays:
             i = min(self._index, len(self._delays) - 1)
@@ -103,8 +107,11 @@ class FakeProc:
         delay: float = 0.0,
         stderr_lines: list[str] | None = None,
         delays: list[float] | None = None,
+        on_terminate: list[str] | None = None,
     ) -> None:
         self.stdout = _FakeStdout(lines, delay, delays)
+        # Lines the worker writes only after SIGTERM.
+        self._on_terminate = list(on_terminate or [])
         # The manager drains stderr concurrently; give it a real stream so that path is exercised.
         self.stderr = _FakeStdout(stderr_lines or [])
         self.returncode = returncode
@@ -125,6 +132,12 @@ class FakeProc:
     def terminate(self) -> None:
         self.terminated = True
         self.signals.append(signal.SIGTERM)
+        # A real worker installs a SIGTERM handler that flushes its pacing ring buffer to stdout on
+        # the way out. Model that, because the manager has to still be reading when it lands --
+        # see test_a_cancel_captures_the_workers_parting_telemetry.
+        if self._on_terminate:
+            self.stdout.append_lines(self._on_terminate)
+            self._on_terminate = []
 
     def kill(self) -> None:
         self.killed = True
@@ -144,9 +157,10 @@ def fake_spawn() -> Callable[..., Callable[[str, dict[str, Any]], Awaitable[Fake
         delay: float = 0.0,
         stderr_lines: list[str] | None = None,
         delays: list[float] | None = None,
+        on_terminate: list[str] | None = None,
     ) -> Callable[[str, dict[str, Any]], Awaitable[FakeProc]]:
         async def _spawn(python: str, payload: dict[str, Any]) -> FakeProc:  # noqa: ARG001
-            return FakeProc(lines, returncode, delay, stderr_lines, delays)
+            return FakeProc(lines, returncode, delay, stderr_lines, delays, on_terminate)
 
         return _spawn
 
