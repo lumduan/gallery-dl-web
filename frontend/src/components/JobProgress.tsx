@@ -27,6 +27,12 @@ function describe(ev: JobEvent): string {
       return `${PACING_ROUTINE.includes(ev.reason ?? "") ? "⏱" : "🐢"} pacing ${
         ev.previous ?? 0
       }s → ${ev.delay ?? 0}s (${ev.reason ?? "?"})`;
+    case "pushback":
+      // The operator's cue that this is the platform, not the app. `terminal` means the run is
+      // over and retrying would extend the block, so it must not read like a transient hiccup.
+      return ev.tier === "terminal"
+        ? `⛔ ${ev.platform ?? "platform"} stopped the run (${ev.rule ?? "?"}) — this is a rate limit, not a download error`
+        : `🐢 ${ev.platform ?? "platform"} pushed back (${ev.rule ?? "?"}) — backed off to ${ev.delay ?? 0}s`;
     case "pacing-telemetry":
       // Non-terminal: the manager killed the worker, and it flushed its request record on the way
       // out so the run can be diagnosed without repeating it.

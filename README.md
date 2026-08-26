@@ -232,8 +232,12 @@ delay itself, is why Facebook used to be so much slower:
 | **Facebook** | **1 per photo** — a full 1–3 MB HTML page each, walked strictly in order | the full delay, per image |
 
 So pacing is **adaptive by default**. A run starts at the floor and only slows down on evidence the
-platform is pushing back — a 429, a 403/503, a redirect to a login page, Facebook's block page, or
-gallery-dl's own warnings — then speeds back up after a clean streak. Only *extractor* requests
+platform is pushing back. What that looks like is platform-specific and was measured rather than
+guessed: **Instagram signals a block by redirecting to its bare home page** (captured after 859
+downloads in 885 s), Facebook serves a block page with HTTP 200, and either can also arrive as a
+429 or 403/503. Signatures are tiered — a transient throttle backs off and keeps going, while a
+terminal one stops, because retrying into a checkpoint only extends the block. A response that
+cannot be classified counts as neither. The run speeds back up after a clean streak. Only *extractor* requests
 count toward that streak: image downloads are unpaced and outnumber them ~30:1 on Instagram, so
 letting them count meant a back-off decayed away before the current page had even finished. Their
 status is still watched — a CDN 429 on an image is real pushback. Separately, the floor **rises

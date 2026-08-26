@@ -181,3 +181,33 @@ def test_facebook_block_page_is_a_rate_limit_not_a_login_wall() -> None:
     re-export a session that is already fine, and a retry extends the block.
     """
     assert detect_rate_limit(FB_BLOCK) is not None
+
+
+def test_the_observed_instagram_block_is_classified_as_a_rate_limit() -> None:
+    """Verbatim from the run that died at t+885s after 859 downloads.
+
+    Before this pattern existed the operator got `reason: dl-failed` and a Python traceback for
+    what is simply a rate limit. The block is a 302 to the bare home page; gallery-dl turns it into
+    this wording at instagram.py:186.
+    """
+    stderr = [
+        '  File "/opt/venv/lib/python3.12/site-packages/gallery_dl/extractor/instagram.py", '
+        "line 186, in request",
+        "    raise self.exc.AbortExtraction(",
+        "gallery_dl.exception.AbortExtraction: HTTP redirect to home page "
+        "(https://www.instagram.com/)",
+        "error:instagram:HTTP redirect to home page (https://www.instagram.com/)",
+    ]
+    limit = detect_rate_limit(stderr)
+    assert limit is not None, "the observed block must not fall through to a raw traceback"
+    assert "rate limit" in limit.message
+    assert "wait" in limit.message.lower()
+
+
+def test_a_login_redirect_is_also_a_rate_limit_not_a_cookie_problem() -> None:
+    """Same mechanism, different landing page.
+
+    Order matters in `_annotate_failure`: rate-limit is checked before login-wall, so this must not
+    send the operator to Settings to re-export cookies that are perfectly good.
+    """
+    assert detect_rate_limit(["AbortExtraction: HTTP redirect to login page (…)"]) is not None
