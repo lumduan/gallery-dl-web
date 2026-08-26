@@ -1,0 +1,94 @@
+# Dependency update automation.
+#
+# Added after four GitHub Actions were found 3-7 majors behind — `actions/checkout` and
+# `actions/setup-node` at v4 against v7, `actions/upload-artifact` at v4 against v7, and
+# `astral-sh/setup-uv` at v3 against v10 — which the runners had been warning about (Node 20
+# deprecation) on every single job. Nothing was watching, so nothing moved.
+#
+# **Minor and patch updates are grouped per ecosystem; majors deliberately are not.** A major is
+# where the breaking change lives and it deserves its own PR carrying its own release notes: the
+# setup-uv jump alone crossed a changed `enable-cache` default (v5), a changed
+# `cache-dependency-glob` default and two removed inputs (v6), the Node 24 move (v7), a removed
+# manifest format (v8), a changed `prune-cache` default (v9) and a new cache-poisoning guard (v10).
+# Grouped into one PR with six other bumps, none of that gets read.
+version: 2
+updates:
+  # ---- CI workflows ---------------------------------------------------------------------------
+  # The ecosystem that motivated this file. Note Dependabot only tracks actions referenced by a
+  # version ref, which is why `astral-sh/setup-uv` is pinned to an exact `v10.0.1` in the workflows
+  # (that action stopped publishing floating major tags after v7, so there is no `@v10` to follow).
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      actions-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # ---- Backend (uv) ---------------------------------------------------------------------------
+  # `uv` is its own ecosystem in dependabot-core (registered as "uv", labelled `python:uv`); the
+  # `pip` ecosystem does not read `uv.lock`. It covers backend/pyproject.toml + backend/uv.lock.
+  # Runtime and dev deps are grouped separately: only the runtime closure ships in the image, and
+  # `security.yml` gates on exactly that set while treating the dev toolchain as informational.
+  - package-ecosystem: "uv"
+    directory: "/backend"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+      prefix-development: "chore(deps-dev)"
+    groups:
+      backend-runtime:
+        dependency-type: "production"
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+      backend-dev:
+        dependency-type: "development"
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # ---- Frontend (npm) -------------------------------------------------------------------------
+  # Next.js/React majors stay ungrouped on purpose: frontend/AGENTS.md exists precisely because
+  # this Next version already departs from what a model has memorised, and a major moves that
+  # target again.
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+      prefix-development: "chore(deps-dev)"
+    groups:
+      frontend-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # ---- Container base images ------------------------------------------------------------------
+  # backend/Dockerfile: ghcr.io/astral-sh/uv:python3.12-bookworm-slim + python:3.12-slim
+  # frontend/Dockerfile: node:24-alpine
+  # A `python:3.13-slim` PR will show up eventually and should NOT be merged on its own — the 3.12
+  # pin is load-bearing against `requires-python` in pyproject.toml and `uv python install 3.12` in
+  # ci.yml. Treat it as a prompt to move all three together, not as a routine bump.
+  - package-ecosystem: "docker"
+    directories:
+      - "/backend"
+      - "/frontend"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore(docker)"
+    groups:
+      base-images-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
