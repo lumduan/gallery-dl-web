@@ -14,8 +14,18 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def _no_real_http(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Any test that actually reaches the transport fails loudly instead of hanging."""
+def _no_real_http(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Any test that actually reaches the transport fails loudly instead of hanging.
+
+    ``@pytest.mark.localhost_http`` opts out, and ``test_capture_e2e.py`` is the only user: the
+    claim it exists to verify — that a response body is readable from inside a ``requests`` hook —
+    is a property of ``requests`` itself and cannot be shown with the transport stubbed out. It
+    binds a loopback server on an ephemeral port, so it still reaches no third party. Opting out by
+    marker keeps the guard in force for everything else; deleting it would not.
+    """
+    if request.node.get_closest_marker("localhost_http"):
+        return
+
     import requests.adapters
 
     def _send(*_args: Any, **_kwargs: Any) -> Any:
