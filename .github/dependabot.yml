@@ -77,6 +77,33 @@ updates:
       # It moves when Node does, in the same commit. See the node ignore under `docker` below.
       - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
+
+      # BLOCKED UPSTREAM, not by us. `typescript-eslint@8.65.0` declares
+      # `peerDependencies.typescript: ">=4.8.4 <6.1.0"` and hard-throws
+      # `"typescript-eslint does not support TS 7.0."` before a single file is linted, so `npm run
+      # lint` exits 2 and `typecheck`/`build` never even run. Its own error points at
+      #   typescript-eslint/typescript-eslint#10940
+      #   "Enhancement: Use TS 7 (tsgo / typescript-go) for type information"
+      # ⚠️ This ignore is BROADER than the block: the peer range would accept a TS 6.0.x major.
+      # Lifting it is a deliberate check that typescript-eslint has shipped support, not an
+      # automatic follow-on. (Was PR #16.)
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+
+      # ALSO BLOCKED UPSTREAM, and further out than it looks. ESLint 10 removed the legacy context
+      # API, and `eslint-plugin-react` still calls `context.getFilename()`:
+      #   TypeError: Error while loading rule 'react/display-name':
+      #             contextOrFilename.getFilename is not a function
+      # This is NOT a stale `eslint-config-next` -- 16.3.2 asks for `eslint-plugin-react: ^7.37.0`
+      # and 7.37.5 IS the latest, released 2025-04-03, with peers `eslint: ^3 || ... || ^9.7`.
+      # ESLint 10 has never been in its supported range, so nothing downstream can route around it;
+      # verified by installing eslint@10 locally against eslint-config-next 16.3.2 and reproducing
+      # the identical failure. Tracking:
+      #   jsx-eslint/eslint-plugin-react#4022 "fix: complete ESLint 10 compatibility" (PR, open)
+      #   jsx-eslint/eslint-plugin-react#4027 "chore: Remove ESLint 10 peer dependency overrides"
+      # (Was PR #17.)
+      - dependency-name: "eslint"
+        update-types: ["version-update:semver-major"]
     groups:
       frontend-minor-patch:
         patterns: ["*"]
