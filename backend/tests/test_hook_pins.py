@@ -70,7 +70,9 @@ def test_hook_pin_matches_the_lockfile(repo: str, package: str) -> None:
     If this fails after a Dependabot bump, the fix is to land the hook PR and the lock PR together,
     not to relax the check — they are two halves of one change.
     """
-    pinned = _hook_revs()[repo].lstrip("v")
+    # `removeprefix`, not `lstrip("v")` — lstrip strips a *set of characters* repeatedly, so a rev
+    # like "vv1" or a future tag beginning with several v's would be mangled rather than trimmed.
+    pinned = _hook_revs()[repo].removeprefix("v")
     locked = _locked_version(package)
     assert pinned == locked, (
         f"{package}: .pre-commit-config.yaml pins {pinned!r} but uv.lock resolves {locked!r}. "
