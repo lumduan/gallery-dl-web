@@ -7,7 +7,7 @@ repos:
       - id: ruff-format
 
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v2.3.0
+    rev: v2.3.1
     hooks:
       # ⚠️ THIS HOOK CHECKS NOTHING, AND HAS NEVER CHECKED ANYTHING. pre-commit passes paths
       # relative to the GIT ROOT, so the files here are `backend/src/...`; `^src/` matches zero of
