@@ -67,6 +67,16 @@ updates:
     commit-message:
       prefix: "chore(deps)"
       prefix-development: "chore(deps-dev)"
+    ignore:
+      # `@types/node` must track the NODE RUNTIME, never npm latest -- it is a description of the
+      # runtime's API surface, not a library. Types *behind* the runtime are harmless (tsc simply
+      # doesn't know about newer APIs); types *ahead* of it are a trap, because `npm run typecheck`
+      # green-lights calls that then throw inside node:24-alpine, and CI cannot catch it -- it
+      # typechecks under `node-version: 24` using whatever types are installed.
+      #
+      # It moves when Node does, in the same commit. See the node ignore under `docker` below.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     groups:
       frontend-minor-patch:
         patterns: ["*"]
@@ -116,7 +126,44 @@ updates:
     open-pull-requests-limit: 3
     commit-message:
       prefix: "chore(docker)"
+    ignore:
+      # Node 24 is the ACTIVE LTS line (LTS since 2025-10-28, EOL 2028-04-30). Node 26 is still
+      # `Current` and does not enter LTS until **2026-10-28**, so bumping now would put the shipped
+      # image on a non-LTS release for two months. Verified against nodejs/Release/schedule.json.
+      #
+      # It is also not a one-file change: Node 24 is pinned in FIVE places that have to move
+      # together -- frontend/Dockerfile (x3), .github/workflows/ci.yml `node-version`,
+      # docker-compose.dev.yml, frontend/package.json `@types/node`, plus the prose in README.md and
+      # CLAUDE.md. A lone Dockerfile bump would leave CI testing on 24 while the image ran 26.
+      #
+      # ⏰ REVISIT 2026-10-28, and move all of them in one commit.
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
     groups:
       base-images-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # ---- Compose files (repo root) ---------------------------------------------------------------
+  # The `docker` entry above is scoped to /backend and /frontend, so it cannot see the compose files
+  # at the repo root -- docker-compose.dev.yml:59 pins `node:24-alpine` and was invisible to
+  # Dependabot entirely. That is exactly how dev and prod drift apart silently.
+  #
+  # docker-compose.yml's own images are this project's ghcr releases, which are published by
+  # docker-publish.yml on a `v*` tag rather than tracked here.
+  - package-ecosystem: "docker-compose"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore(docker)"
+    ignore:
+      # Same coupling and the same revisit date as the Dockerfile above.
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
+    groups:
+      compose-images-minor-patch:
         patterns: ["*"]
         update-types: ["minor", "patch"]
