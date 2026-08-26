@@ -7,6 +7,7 @@ export type JobEventType =
   | "progress"
   | "heartbeat"
   | "pacing"
+  | "pacing-telemetry"
   | "stalled"
   | "retrying"
   | "paused"
@@ -27,6 +28,7 @@ export const JOB_EVENT_TYPES: JobEventType[] = [
   "progress",
   "heartbeat",
   "pacing",
+  "pacing-telemetry",
   "stalled",
   "retrying",
   "paused",
@@ -36,6 +38,33 @@ export const JOB_EVENT_TYPES: JobEventType[] = [
   "failed",
   "cancelled",
 ];
+
+/**
+ * One observed request, as the pacer saw it. Post-mortem evidence, not a live feed — the worker
+ * keeps the last 50 and flushes them once (see docs/event-contract.md rule 12b).
+ *
+ * Carries no cookie values, no request headers and no URL query string: `url` is host + path only
+ * (Instagram signs media URLs in the query) and `body` is a redacted 500-byte prefix, captured only
+ * for JSON/HTML and never read from a streamed response.
+ */
+export interface PacingTelemetryEntry {
+  /** Monotonic request index within the job; survives ring-buffer eviction. */
+  i: number;
+  /** Seconds: the delay in force, the ramped floor, and the back-off ceiling at that moment. */
+  delay: number;
+  floor: number;
+  ceiling: number;
+  status: number | null;
+  url: string;
+  content_type: string;
+  body: string;
+  /** True for media downloads — their body is never read and they never count as a clean request. */
+  streamed: boolean;
+  /** `clean`, or the pacing reason that matched. */
+  classified: string;
+  /** The named signature that matched, once the signature table exists. */
+  rule: string | null;
+}
 
 export interface JobEvent {
   type: JobEventType | string;
@@ -80,6 +109,11 @@ export interface JobEvent {
   platform?: string;
   /** resumed only: how long the job was paused, in seconds. */
   paused_for?: number;
+  /**
+   * On a terminal event, or on a standalone `pacing-telemetry` event when the worker was killed:
+   * the last requests the pacer observed. Absent when nothing was observed or pacing was `fixed`.
+   */
+  pacing_telemetry?: PacingTelemetryEntry[];
   ts?: number;
 }
 

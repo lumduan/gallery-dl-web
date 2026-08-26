@@ -24,6 +24,7 @@ import contextlib
 import json
 import logging
 import os
+import signal
 import sys
 import threading
 import time
@@ -172,6 +173,27 @@ _POSTPROCESSORS = [
 ]
 
 
+# The live pacer, so the terminal event can carry its telemetry. Module-level for the same reason
+# ``_CTX`` is: the SIGTERM handler has no other way to reach it. ``None`` in fixed mode (no pacer is
+# installed at all) and before ``_install_pacing`` runs.
+_PACER: pacing.AdaptivePacer | None = None
+
+
+def _telemetry_fields() -> dict[str, Any]:
+    """``{"pacing_telemetry": [...]}``, or ``{}`` when there is nothing to report.
+
+    Empty in fixed mode, and empty when no request was ever observed — an absent key is easier to
+    reason about downstream than an empty list.
+    """
+    if _PACER is None:
+        return {}
+    try:
+        entries = _PACER.telemetry()
+    except Exception:  # pragma: no cover - defensive; telemetry must never cost a terminal event
+        return {}
+    return {"pacing_telemetry": entries} if entries else {}
+
+
 def _install_pacing(payload: dict[str, Any]) -> Callable[[], None] | None:
     """Install the adaptive pacer, or return None to leave gallery-dl's own `sleep-request` alone.
 
@@ -179,6 +201,7 @@ def _install_pacing(payload: dict[str, Any]) -> Callable[[], None] | None:
     `sleep-request` that ``config_builder`` already set, which in adaptive mode is the floor.
     Logged to stderr — stdout is the JSON event channel and a stray line would corrupt it.
     """
+    global _PACER
     block = payload.get("pacing")
     if not isinstance(block, dict) or block.get("mode") != "adaptive":
         return None
@@ -189,10 +212,53 @@ def _install_pacing(payload: dict[str, Any]) -> Callable[[], None] | None:
             emit=_emit,
             platform=str(payload.get("platform", "")),
         )
-        return pacing.install(pacer)
+        stop = pacing.install(pacer)
     except Exception:
         logger.exception("adaptive pacing could not be installed; falling back to fixed pacing")
         return None
+    _PACER = pacer
+    return stop
+
+
+def _install_sigterm_flush() -> Callable[[], None]:
+    """Emit the telemetry before the manager's SIGTERM kills us. Returns a restore callable.
+
+    Without this the evidence is lost in exactly the case it is most wanted: a job killed by the
+    stall detector. The manager sends SIGTERM and waits ``stall_kill_grace_seconds`` (10 s) before
+    SIGKILL, which is ample for one write.
+
+    It emits a **non-terminal** ``pacing-telemetry`` event, deliberately — not a ``failed``. The
+    manager synthesizes its own terminal event on the stall-kill path (``manager.py:575-588``), and
+    a terminal event from here would race it and break the contract's "exactly one terminal event"
+    rule. The manager's catch-all forwards this one untouched into the job's history instead.
+
+    ``signal.signal`` only works on the main thread; a worker that somehow is not on one degrades to
+    the previous behaviour rather than failing to start.
+    """
+    try:
+        previous = signal.getsignal(signal.SIGTERM)
+    except (ValueError, OSError):  # pragma: no cover - platform/threading edge
+        return lambda: None
+
+    def _on_term(signum: int, frame: Any) -> None:
+        with contextlib.suppress(Exception):  # a broken stdout must not block the kill
+            fields = _telemetry_fields()
+            if fields:
+                _emit({"type": "pacing-telemetry", "reason": "terminated", **fields})
+        if callable(previous):
+            previous(signum, frame)
+        raise SystemExit(128 + signum)
+
+    try:
+        signal.signal(signal.SIGTERM, _on_term)
+    except (ValueError, OSError):  # pragma: no cover - not the main thread
+        return lambda: None
+
+    def _restore() -> None:
+        with contextlib.suppress(ValueError, OSError, TypeError):
+            signal.signal(signal.SIGTERM, previous)
+
+    return _restore
 
 
 def _start_heartbeat(interval: float) -> threading.Event:
@@ -236,12 +302,15 @@ def run(payload: dict[str, Any]) -> int:
 
     heartbeat: threading.Event | None = None
     stop_pacing: Callable[[], None] | None = None
+    restore_sigterm: Callable[[], None] | None = None
     try:
         config_builder.apply(payload, config)
         # After config_builder (whose `sleep-request` is the seed and the fallback) and before
         # DownloadJob, because Job.run() -> _init() -> extractor.initialize() builds the session
         # the response hook has to be attached to.
         stop_pacing = _install_pacing(payload)
+        if stop_pacing is not None:
+            restore_sigterm = _install_sigterm_flush()
         _emit({"type": "started", "url": url})
 
         interval = float(payload.get("heartbeat_seconds", 15.0))
@@ -260,6 +329,7 @@ def run(payload: dict[str, Any]) -> int:
                 "downloaded": _CTX["downloaded"],
                 "skipped": _CTX["skipped"],
                 "failed": _CTX["failed"],
+                **_telemetry_fields(),
             }
         )
         return 0
@@ -271,6 +341,7 @@ def run(payload: dict[str, Any]) -> int:
                 "exit_status": 2,
                 "reason": "worker-crash",
                 "message": f"{type(exc).__name__}: {exc}",
+                **_telemetry_fields(),
             }
         )
         return 2
@@ -283,6 +354,10 @@ def run(payload: dict[str, Any]) -> int:
         # gallery-dl's Extractor is class-level state and leaving it patched leaks across them.
         if stop_pacing is not None:
             stop_pacing()
+        if restore_sigterm is not None:
+            restore_sigterm()
+        global _PACER
+        _PACER = None
 
 
 def main(stdin: IO[str] | None = None) -> int:

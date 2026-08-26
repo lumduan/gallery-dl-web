@@ -22,13 +22,14 @@ Both sides must honor it; the TS mirror lives in `frontend/src/lib/events.ts`.
 | `progress`  | Running counts (manager-emitted, job-level/monotonic across retries), after each `file` | `downloaded`, `skipped`, `failed` |
 | `heartbeat` | Worker liveness while gallery-dl is silent (non-terminal) | `beat`, `elapsed`                    |
 | `pacing`    | The adaptive request delay changed (non-terminal) | `platform`, `delay`, `previous`, `reason`, `requests` |
+| `pacing-telemetry` | The worker was SIGTERMed and flushed its request ring buffer (non-terminal) | `reason` (`terminated`), `pacing_telemetry` |
 | `stalled`   | No **file** event within the progress deadline (non-terminal) | `attempt`, `threshold`, `phase` (`warmup` \| `download`), `since_last_file`? |
 | `retrying`  | The stalled/exit worker was killed and a fresh one will spawn (non-terminal) | `attempt`, `reason` (`stalled` \| `worker-exited`) |
 | `paused`    | Operator paused the job; worker SIGSTOPed (non-terminal) | `downloaded`, `skipped`                |
 | `resumed`   | Operator resumed it; worker SIGCONTed after re-acquiring a slot (non-terminal) | `paused_for`, `downloaded`, `skipped` |
 | `error`     | A recoverable or fatal error                  | `message`, `kind`, `fatal` (bool)                       |
-| `completed` | **Terminal.** Worker exited status 0          | `exit_status`, `downloaded`, `skipped`, `reason`        |
-| `failed`    | **Terminal.** Worker exited non-zero, or retries exhausted (`reason`: `stalled` \| `no-progress` \| `rate-limited` \| `login-required` \| `worker-crash` \| `downloads-dir-unwritable` \| a gallery-dl reason such as `dl-failed`) | `exit_status`, `reason`, `message`?, `resume_url`? |
+| `completed` | **Terminal.** Worker exited status 0          | `exit_status`, `downloaded`, `skipped`, `reason`, `pacing_telemetry`? |
+| `failed`    | **Terminal.** Worker exited non-zero, or retries exhausted (`reason`: `stalled` \| `no-progress` \| `rate-limited` \| `login-required` \| `worker-crash` \| `downloads-dir-unwritable` \| a gallery-dl reason such as `dl-failed`) | `exit_status`, `reason`, `message`?, `resume_url`?, `pacing_telemetry`? |
 | `cancelled` | **Terminal.** Operator stopped the job (`reason`: `cancelled`) | `reason`, `message`, `downloaded`, `skipped` |
 | `ping`      | sse-starlette keepalive (15 s)                | `{}`                                                    |
 | `end`       | Synthetic terminal sentinel from the SSE route | `{ "terminal": true }`                                |
@@ -97,6 +98,23 @@ Both sides must honor it; the TS mirror lives in `frontend/src/lib/events.ts`.
     ⚠️ Back-off lowers the odds of *reaching* a block; it cannot recover from one. gallery-dl
     aborts the run the moment it sees Facebook's block page, and that outcome is still reported by
     rule 10's `rate-limited` classification.
+    ⚠️ **A media download never counts toward the clean streak.** Downloads share the extractor's
+    session so they reach the pacer's response hook, but they bypass `Extractor.request` — so they
+    are neither paced nor counted toward the ramp, while outnumbering extractor requests ~30:1 on
+    Instagram. Counting them as clean decayed a ceiling-level penalty back to the floor inside a
+    single page, which meant `adaptive` behaved as `fixed(floor)` in exactly the regime it exists
+    to protect. Their *status* is still judged — a CDN 429 on an image is real pushback.
+12b. **`pacing_telemetry` is the post-mortem record**, not a live feed. The worker keeps a bounded
+    ring buffer (last 50 observed requests) and attaches it **once**, to its own terminal event —
+    or, when the manager SIGTERMs it on the stall-kill path, flushes it as a standalone
+    **non-terminal** `pacing-telemetry` event, because a terminal event from the worker there would
+    race the manager's synthesized one and break rule 1. It is deliberately not a per-request event
+    type, for the deque reason in rule 12. Each entry is
+    `{i, delay, floor, ceiling, status, url, content_type, body, streamed, classified, rule}`.
+    Per rule 6 it carries **no cookie values, no request headers, and no URL query string** — `url`
+    is host + path only, because Instagram signs media URLs in the query; `body` is a redacted
+    500-byte prefix captured only for JSON/HTML responses, and never read from a streamed one.
+    The key is absent when nothing was observed, and in `fixed` mode (no pacer is installed).
 13. **Pause is a real process suspension**, driven by `POST /api/jobs/{id}/pause`. The manager
     SIGSTOPs the worker, so gallery-dl keeps its place in the profile walk and no `heartbeat`
     arrives until it resumes. The concurrency slot is handed back — that is the point, a waiting

@@ -224,6 +224,26 @@ therefore makes every short one ~5x slower than it needs to be.
   `"Failed to find photo download URL"` warning. It reuses `errors.py:detect_rate_limit`, so the
   live sensor and the reported failure reason cannot drift apart.
 
+**A media download is judged but never counted as clean, and the asymmetry is load-bearing.**
+Downloads share `extractor.session` (`downloader/common.py`), so they reach the response hook — but
+they bypass `Extractor.request`, so `begin_request()` never counts them toward the ramp and the
+pacer never spaces them. On Instagram they outnumber extractor requests ~30:1 (~30 images per JSON
+page). While they advanced the clean streak, `decay_after=10` + `growth=3.0` meant ~20 of them
+returned a ceiling-level penalty to the floor — *inside a single page* — so the controller could not
+hold a back-off no matter what it detected, and `adaptive` behaved as `fixed(floor)` in exactly the
+regime it exists for. `observe` therefore judges their **status** (a CDN 429 on an image is real)
+but withholds `clean()`. Don't "simplify" that branch away.
+
+**The body branch of `_classify` has never fired, and `_buffered_body` explains why.** `requests`
+dispatches response hooks at `sessions.py:791` and buffers the body at `sessions.py:827`, so
+`_content_consumed` is always `False` when the hook runs and `_buffered_body()` returns `b""`.
+Facebook is covered anyway by the log sensor; Instagram had no equivalent, which is how its
+HTTP-200 throttles went unseen. `telemetry.capture_body` is the safe way to read one: for a
+**non-streamed** response `.content` is free (requests performs the identical read moments later and
+memoises it), and the `stream` kwarg is the only reliable discriminator — `response.raw.closed` is
+`False` for streamed and non-streamed alike at hook time. `_NULL_RESPONSE_STATUS` (900) is likewise
+inert via `observe`: gallery-dl builds `NullResponse` itself and it never traverses `Session.send`.
+
 **The volume ramp, not the reactive back-off, is what protects a long run.** A hard block is
 terminal by design — `facebook.py:photo_page_request_wrapper` raises `AbortExtraction` the moment
 it sees the block page — so backing off afterwards achieves nothing. Instead the *floor* rises with
