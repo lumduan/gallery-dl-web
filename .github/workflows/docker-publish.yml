@@ -63,3 +63,42 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # Turns a `v*` tag into a GitHub Release. Gated on BOTH image jobs, so a release never announces
+  # a version whose images failed to publish -- the tag alone used to be the whole release, and
+  # there was no page anywhere for any of the eight tags before v0.6.0.
+  #
+  # Uses the preinstalled `gh` CLI rather than a third-party release action: one less dependency to
+  # keep current, and this workflow's actions were already 1-2 majors behind before today.
+  release:
+    needs: [backend, frontend]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # Only this job gets write; the build jobs stay on the workflow-level `contents: read`.
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The annotated tag object is needed for its message, which a shallow clone omits.
+          fetch-depth: 0
+      - name: Create the GitHub Release from the annotated tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists — nothing to do"
+            exit 0
+          fi
+          # Prefer the annotated tag's own message: it is written deliberately at release time and
+          # says why the release matters, which generated commit lists do not.
+          git tag -l --format='%(contents)' "$TAG" > notes.md
+          if [ -s notes.md ]; then
+            gh release create "$TAG" --title "$TAG" --notes-file notes.md --verify-tag
+          else
+            echo "tag is lightweight or has no message — falling back to generated notes"
+            gh release create "$TAG" --title "$TAG" --generate-notes --verify-tag
+          fi
