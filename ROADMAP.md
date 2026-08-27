@@ -44,10 +44,11 @@ flowchart TD
 | **6 · Theming** | ✅ DONE | **System / Light / Dark** from the navbar menu or **Settings → Appearance**; System follows the OS live via DaisyUI's `--prefersdark`, an explicit choice persists in `localStorage` and is applied pre-paint by an inline `<head>` script. Removed the create-next-app boilerplate that had the app hard-locked to light; **`v0.3.0` tagged 2026-07-24** | — |
 | **7 · Anonymous mode** | ✅ DONE | Cookies are now **optional**: no cookies stored → the job runs logged-out instead of being refused, and `options.anonymous` forces that even when cookies exist. Anonymous IG switches to gallery-dl's `graphql` API and drops auth-only `include` categories; a login wall is classified as `reason: login-required` instead of a traceback. `missing-cookies` retired from the event contract. Five CI gates green (**90.4%** coverage); **live E2E 2026-08-16** — 9 real files off a public FB page with zero cookies; **`v0.4.0` tagged 2026-08-16** | — |
 | **8 · Adaptive pacing** | ✅ DONE | Facebook was ~5.5 s of sleep **per image** (one HTML page per photo) against Instagram's ~0.3 s (~30 posts per request). Pacing is now **adaptive**: start at a floor, back off only on evidence, and raise the floor as a run gets long. Configurable in three places — env, **Settings → Download pacing** (no restart), and per job. Facebook also drops `albums` from the default `include`, gains an opt-in *quick update*, and bounds gallery-dl's 122 s fallback stall. Live-verified: the same job slept **4.68 s**/request on `fixed 3-8` and **1.01 s** on `adaptive`. Five CI gates green (**91.1%** coverage); **`v0.5.0` tagged 2026-08-18** | — |
+| **9 · Pushback signatures** | ✅ DONE | The adaptive back-off had never engaged: a captured block showed `delay == floor` on all 50 buffered requests, every one classified `clean` — the fatal one included. **Instagram signals a block with a 302 to its bare home page**, not the hypothesised HTTP 200 + `{"status":"fail"}` and not a 429; the old detector's URL marker looked for `/accounts/login`, and its body scan could never fire because `requests` dispatches hooks before buffering. Pushback is now a per-platform **signature table** (`signatures.py`) with four tiers — `UNKNOWN` no longer counts as clean — plus per-request telemetry flushed on terminal events *and* on a kill, a `pushback` SSE event, and `errors.py` reporting a block as a rate limit instead of a traceback. Media downloads no longer decay the back-off. Five CI gates green (**90.8%** coverage); **live-captured 2026-08-26** — block reproduced at 859 downloads / 885 s; **`v0.6.0` tagged 2026-08-27** | — |
 | **D1 · Operator cookies** | ✅ DONE | Real IG `sessionid` + FB cookies in use; live downloads confirmed 2026-07-23 | — |
 
-> **All phases are complete; the current release is `v0.5.0`** (`v0.1.0` shipped phase 4, `v0.2.0`
-> phase 5, `v0.3.0` phase 6, `v0.4.0` phase 7, `v0.5.0` phase 8). Live E2E passes against real
+> **All phases are complete; the current release is `v0.6.0`** (`v0.1.0` shipped phase 4, `v0.2.0`
+> phase 5, `v0.3.0` phase 6, `v0.4.0` phase 7, `v0.5.0` phase 8, `v0.6.0` phase 9). Live E2E passes against real
 > Instagram and Facebook profiles, and both images publish to ghcr on tag. Note that Facebook
 > rate-limits an account after a few hundred images in one run ("temporarily blocked from viewing
 > images"); that is a platform limit, not a defect, and the job reports it verbatim — and since
@@ -302,6 +303,28 @@ after Facebook blocked an account at ~767 images.
       end-to-end **images/minute on a real profile**. The per-request delay is measured and is the
       thing this phase changed; total throughput also depends on page size and link speed, and was
       never timed before the change either, so there is no baseline to compare against.
+
+### 9 · Pushback signatures — ✅ DONE
+- [x] **Diagnosed from a capture, not from the hypothesis.** A run at `adaptive 4-30` blocked after
+      859 downloads / 885 s. The ring buffer showed `classified: {'clean': 50}` and `delay == floor`
+      on every observation — the reactive back-off had never engaged at all, the volume ramp carried
+      the whole run. The block is `AbortExtraction: HTTP redirect to home page`, i.e. a **302 to the
+      bare domain root**. The `{"status":"fail"}` envelope and the `checkpoint_required` family
+      never appeared.
+- [x] `gallerydl/signatures.py` — per-platform `(name, tier, predicate)` as **data**, so the live
+      sensor and the reported reason cannot drift. `THROTTLE` backs off, `TERMINAL` stops (retrying
+      into a checkpoint extends the block), `CLEAN` may advance the streak, and **`UNKNOWN` never
+      does** — "we could not tell" is not evidence of health.
+- [x] `gallerydl/telemetry.py` — bounded ring buffer of the last 50 requests, redacted (host+path
+      only, no query, no cookies), flushed into the worker's terminal event **and** on a SIGTERM
+      kill, so a stall-killed run still yields its evidence.
+- [x] Media downloads no longer feed the clean streak. Verified live: 12 consecutive clean
+      downloads with the delay unchanged, where before the tenth would have divided it by `growth`.
+- [x] `pushback` SSE event (tier + rule + redacted body); `errors.py` reports the block as a rate
+      limit with plain-language advice instead of `dl-failed` plus a traceback.
+      ➡️ **Known and deliberately not fixed here:** captured URL paths and body prefixes still carry
+      third-party numeric profile ids. Safe for a private post-mortem; needs sanitising before any
+      capture is shared or committed.
 
 ### D1 · Operator cookies — ✅ DONE
 - **Primary (new): browser extension** — load `extension/` unpacked, set the server URL, click
