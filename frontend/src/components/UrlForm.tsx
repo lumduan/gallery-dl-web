@@ -19,6 +19,9 @@ export function UrlForm() {
   const [pacingMode, setPacingMode] = useState<PacingMode | "default">("default");
   const [pacingMin, setPacingMin] = useState(1);
   const [pacingMax, setPacingMax] = useState(30);
+  // null, not 0: the job layer saying nothing must inherit the server's per-image delay rather
+  // than switching it off. Only a number the operator actually typed is sent.
+  const [pacingPerFile, setPacingPerFile] = useState<number | null>(null);
   const [cookieStatus, setCookieStatus] = useState<SettingsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -63,7 +66,12 @@ export function UrlForm() {
       }
       // Omitted entirely unless overridden, so the server's Settings stay in charge.
       if (pacingMode !== "default") {
-        options["pacing"] = { mode: pacingMode, min: pacingMin, max: pacingMax };
+        options["pacing"] = {
+          mode: pacingMode,
+          min: pacingMin,
+          max: pacingMax,
+          per_file: pacingPerFile,
+        };
       }
       // Only sent when opted in. Omitted, the backend still runs anonymously if no cookies are
       // stored for the platform — this flag is the "even though I have cookies" override.
@@ -237,12 +245,27 @@ export function UrlForm() {
                         onChange={(e) => setPacingMax(Number(e.target.value))}
                       />
                     </label>
+                    <label className="flex items-center gap-2">
+                      <span className="label-text text-xs">Per image (s)</span>
+                      <input
+                        type="number"
+                        min={0}
+                        step="0.5"
+                        placeholder="default"
+                        className="input input-bordered input-sm w-24"
+                        value={pacingPerFile ?? ""}
+                        onChange={(e) =>
+                          setPacingPerFile(e.target.value === "" ? null : Number(e.target.value))
+                        }
+                      />
+                    </label>
                   </>
                 )}
               </div>
               <p className="text-xs text-base-content/60">
                 Adaptive starts at the floor and backs off only when the platform pushes back.
-                Change the default for every job in{" "}
+                Per image is a separate axis and applies in both modes; leave it blank to keep the
+                server&apos;s value. Change the default for every job in{" "}
                 <a className="link" href="/settings">
                   Settings
                 </a>

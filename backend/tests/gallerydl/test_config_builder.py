@@ -304,3 +304,73 @@ def test_a_malformed_pacing_block_falls_back_instead_of_failing_the_job() -> Non
         fake = FakeConfig()
         config_builder.apply(_fb(pacing=bad), fake)
         assert fake.as_dict()[(("extractor", "facebook"), "sleep-request")] == [3.0, 8.0]
+
+
+# --- per-image pacing -----------------------------------------------------------------------------
+#
+# A different axis from `sleep-request`: that one spaces the extractor's API requests, this one
+# spaces the image downloads a single request releases. On Instagram those outnumber API requests
+# ~30:1 and nothing paced them before, which is why measured runs showed a 0.8-2.7 s median gap
+# between consecutive files while the API calls sat 20 s apart.
+
+
+def _sleep(payload: dict[str, Any], platform: str = "instagram") -> Any:
+    fake = FakeConfig()
+    config_builder.apply(payload, fake)
+    return fake.as_dict()[(("extractor", platform), "sleep")]
+
+
+def test_per_file_becomes_a_jittered_sleep_band() -> None:
+    """Never a bare constant: perfectly periodic gaps are a fingerprint."""
+    assert _sleep(_ig(pacing={"mode": "adaptive", "min": 4.0, "max": 30.0, "per_file": 2.0})) == [
+        1.7,
+        2.3,
+    ]
+
+
+def test_the_band_is_centred_on_the_operators_number() -> None:
+    """So the value they typed is the mean gap, not the floor."""
+    band = _sleep(_ig(pacing={"mode": "fixed", "min": 1.0, "max": 2.0, "per_file": 10.0}))
+    assert sum(band) / 2 == 10.0
+
+
+@pytest.mark.parametrize("per_file", [0.0, 0, None])
+def test_zero_and_unset_disable_it_outright(per_file: float | None) -> None:
+    """0 is a true off switch: gallery-dl's build_duration_func maps it to None and skips the
+    call site entirely, so the disabled path is byte-for-byte the pre-feature behaviour."""
+    assert (
+        _sleep(_ig(pacing={"mode": "adaptive", "min": 4.0, "max": 30.0, "per_file": per_file}))
+        == 0.0
+    )
+
+
+def test_a_payload_with_no_pacing_block_gets_no_per_file_delay() -> None:
+    """A direct worker invocation. The manager always resolves a real block."""
+    assert _sleep(_ig()) == 0.0
+
+
+def test_an_explicit_sleep_option_beats_the_pacing_block() -> None:
+    """Same escape hatch `sleep-request` has: the raw gallery-dl key wins outright."""
+    payload = _ig(
+        pacing={"mode": "adaptive", "min": 4.0, "max": 30.0, "per_file": 2.0},
+        options={"sleep": [9.0, 9.5]},
+    )
+    assert _sleep(payload) == [9.0, 9.5]
+
+
+def test_a_malformed_per_file_does_not_invalidate_the_rest_of_the_block() -> None:
+    """min/max are the load-bearing half; a bad per_file must not cost them."""
+    fake = FakeConfig()
+    config_builder.apply(
+        _ig(pacing={"mode": "fixed", "min": 3.0, "max": 9.0, "per_file": "soon"}), fake
+    )
+    d = fake.as_dict()
+    assert d[(("extractor", "instagram"), "sleep")] == 0.0
+    assert d[(("extractor", "instagram"), "sleep-request")] == [3.0, 9.0]
+
+
+def test_facebook_gets_no_per_file_delay_by_default() -> None:
+    """extract_set fetches a full page per photo, so FB already pays sleep-request once per
+    image; a second per-file delay would double-charge it."""
+    payload = _fb(pacing={"mode": "adaptive", "min": 1.0, "max": 30.0, "per_file": 0.0})
+    assert _sleep(payload, platform="facebook") == 0.0

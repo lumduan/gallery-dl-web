@@ -18,11 +18,16 @@ flowchart TD
     P3 --> P7
     P2 --> P8["8 · Adaptive pacing<br/>Facebook speed + configurable wait<br/>DONE — v0.5.0"]
     P5 --> P8
+    P8 --> P9["9 · Pushback signatures<br/>what a block actually looks like<br/>DONE — v0.6.0"]
+    P8 --> P10["10 · Per-image pacing<br/>the burst nothing was pacing<br/>DONE"]
+    P9 --> P10
 
     classDef done     fill:#d4f4dd,stroke:#2d8a4e,color:#1a5c33
     classDef active   fill:#fff3cd,stroke:#cc9a06,color:#7a5c04
     classDef decision fill:#fde0e0,stroke:#d05555,color:#8f2e2e
 
+    class P9 done
+    class P10 done
     class P1 done
     class P2 done
     class P3 done
@@ -45,9 +50,11 @@ flowchart TD
 | **7 · Anonymous mode** | ✅ DONE | Cookies are now **optional**: no cookies stored → the job runs logged-out instead of being refused, and `options.anonymous` forces that even when cookies exist. Anonymous IG switches to gallery-dl's `graphql` API and drops auth-only `include` categories; a login wall is classified as `reason: login-required` instead of a traceback. `missing-cookies` retired from the event contract. Five CI gates green (**90.4%** coverage); **live E2E 2026-08-16** — 9 real files off a public FB page with zero cookies; **`v0.4.0` tagged 2026-08-16** | — |
 | **8 · Adaptive pacing** | ✅ DONE | Facebook was ~5.5 s of sleep **per image** (one HTML page per photo) against Instagram's ~0.3 s (~30 posts per request). Pacing is now **adaptive**: start at a floor, back off only on evidence, and raise the floor as a run gets long. Configurable in three places — env, **Settings → Download pacing** (no restart), and per job. Facebook also drops `albums` from the default `include`, gains an opt-in *quick update*, and bounds gallery-dl's 122 s fallback stall. Live-verified: the same job slept **4.68 s**/request on `fixed 3-8` and **1.01 s** on `adaptive`. Five CI gates green (**91.1%** coverage); **`v0.5.0` tagged 2026-08-18** | — |
 | **9 · Pushback signatures** | ✅ DONE | The adaptive back-off had never engaged: a captured block showed `delay == floor` on all 50 buffered requests, every one classified `clean` — the fatal one included. **Instagram signals a block with a 302 to its bare home page**, not the hypothesised HTTP 200 + `{"status":"fail"}` and not a 429; the old detector's URL marker looked for `/accounts/login`, and its body scan could never fire because `requests` dispatches hooks before buffering. Pushback is now a per-platform **signature table** (`signatures.py`) with four tiers — `UNKNOWN` no longer counts as clean — plus per-request telemetry flushed on terminal events *and* on a kill, a `pushback` SSE event, and `errors.py` reporting a block as a rate limit instead of a traceback. Media downloads no longer decay the back-off. Five CI gates green (**90.8%** coverage); **live-captured 2026-08-26** — block reproduced at 859 downloads / 885 s; **`v0.6.0` tagged 2026-08-27** | — |
+| **10 · Per-image pacing** | ✅ DONE | Everything phases 8-9 built paces the **API requests** that list posts; nothing paced the **image downloads** those requests release, and on Instagram they outnumber API requests ~30:1. Measured across three real runs the median gap between consecutive files was **0.8-2.7 s** while the API calls sat 20 s apart — a sub-second burst is what a rate limiter reacts to, and the run *mean* (1.8-6.8 s across the same three) only reflects how many page boundaries were hit. New **seconds per image** control on the same three surfaces, reaching gallery-dl's own `sleep` as a ±15% band. Defaults IG **2 s**, FB **0** (it already pays the request delay once per photo). Works in `fixed` mode too, where no pacer is installed at all, and costs nothing on skips | — |
 | **D1 · Operator cookies** | ✅ DONE | Real IG `sessionid` + FB cookies in use; live downloads confirmed 2026-07-23 | — |
 
-> **All phases are complete; the current release is `v0.6.0`** (`v0.1.0` shipped phase 4, `v0.2.0`
+> **All phases are complete; the last release is `v0.6.0` and phase 10 is merged but unreleased**
+> (`v0.1.0` shipped phase 4, `v0.2.0`
 > phase 5, `v0.3.0` phase 6, `v0.4.0` phase 7, `v0.5.0` phase 8, `v0.6.0` phase 9). Live E2E passes against real
 > Instagram and Facebook profiles, and both images publish to ghcr on tag. Note that Facebook
 > rate-limits an account after a few hundred images in one run ("temporarily blocked from viewing
@@ -299,10 +306,13 @@ after Facebook blocked an account at ~767 images.
       the platform-aware advanced block, with no console errors.
 - [x] tag `v0.5.0` (2026-08-18) → ghcr publish of
       `ghcr.io/lumduan/gallery-dl-web/{backend,frontend}:{latest,v0.5.0}`
-      ➡️ **Not measured, and moved to the backlog rather than left as a phase blocker:**
+      ➡️ **Not measured at the time, and moved to the backlog rather than left as a phase blocker:**
       end-to-end **images/minute on a real profile**. The per-request delay is measured and is the
       thing this phase changed; total throughput also depends on page size and link speed, and was
-      never timed before the change either, so there is no baseline to compare against.
+      never timed before the change either, so there was no baseline to compare against.
+      ➡️ **CLOSED by phase 10 (2026-09-05).** Inter-file spacing was measured retroactively from
+      file mtimes across three real Instagram runs, which is what produced the median-vs-mean
+      finding phase 10 is built on. The baseline exists now.
 
 ### 9 · Pushback signatures — ✅ DONE
 - [x] **Diagnosed from a capture, not from the hypothesis.** A run at `adaptive 4-30` blocked after
@@ -325,6 +335,46 @@ after Facebook blocked an account at ~767 images.
       ➡️ **Known and deliberately not fixed here:** captured URL paths and body prefixes still carry
       third-party numeric profile ids. Safe for a private post-mortem; needs sanitising before any
       capture is shared or committed.
+
+### 10 · Per-image pacing — ✅ DONE
+Prompted directly by an operator request: *"I want, when downloading IG images, avg download rate
+is 2 sec per image."*
+
+Phases 8 and 9 both paced the **extractor's API requests**. Neither touched the **image downloads**
+those requests release, and on Instagram they outnumber API requests ~30:1 — `observe()` already
+judged them but deliberately withheld `clean()`, and nothing spaced them at all.
+
+- [x] **Measured before building.** Inter-file mtime gaps across three real Instagram runs of the
+      same profile:
+
+      | Run | Files | Elapsed | Mean gap | Median gap | p90 |
+      |---|---|---|---|---|---|
+      | A | 600 | 3783 s | 6.32 s | **2.68 s** | 14.8 s |
+      | B | 284 | 516 s | 1.82 s | **0.80 s** | 2.4 s |
+      | C | 110 | 742 s | 6.80 s | **0.92 s** | 2.8 s |
+
+      The distribution is **bimodal** — sub-second bursts inside one API page, then a 20-160 s gap
+      at the page boundary. The mean is an artifact of how many boundaries a run hit, which is why
+      it swings 1.8 → 6.8 across three runs of the same shape. **"2 s per image" therefore had two
+      different answers, and the operator was asked which** before any code was written.
+- [x] `per_file` on the pacing block, resolved through the existing job → store → env chain, and
+      emitted from `config_builder._resolve_sleep_file` as gallery-dl's own `sleep` option in a
+      **±15% band** — a perfectly periodic gap is a fingerprint, and gallery-dl ships Instagram's
+      `request_interval` as a range for the same reason.
+- [x] **Deliberately not routed through the pacer.** `worker.py` installs none unless the mode is
+      `adaptive`, and the operator was on `fixed` at the time — a pacer-based version would have
+      been silently dead for them on the day it shipped.
+- [x] **Absent ≠ zero.** `normalize_pacing` builds a fresh dict, so `per_file` is `float | None`
+      there and `merge_pacing` fills it per field from the layer below. Without that, a
+      `pacing.json` written by v0.6.0 — or any per-job override, since `UrlForm` builds its block
+      field by field — would have read as "the operator turned it off" and vetoed the default.
+- [x] `tests/gallerydl/test_upstream_pins.py` — four pins on gallery-dl internals this depends on,
+      each asserting its markers were **found** before comparing them. The load-bearing one is that
+      both skip paths in `DownloadJob.handle_url` return *before* the sleep: a bump that moved it
+      would turn a seconds-long re-run of a 2000-file profile into an hours-long one, silently.
+- [x] Eight CI gates green; 330 backend tests at **90.9%** coverage. The nine new config_builder
+      cases were run against the pre-change source first and all nine failed, so they test the
+      change rather than merely passing.
 
 ### D1 · Operator cookies — ✅ DONE
 - **Primary (new): browser extension** — load `extension/` unpacked, set the server URL, click

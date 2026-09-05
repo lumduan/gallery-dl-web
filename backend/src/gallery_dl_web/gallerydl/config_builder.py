@@ -12,10 +12,11 @@ Payload shape (received by the worker over stdin)::
     {
       "job_id", "url", "platform", "output_dir",
       "anonymous": bool,   # run logged-out; `cookies` is then None and never validated
-      "pacing": {"mode": "adaptive"|"fixed", "min": float, "max": float} | None,
+      "pacing": {"mode": "adaptive"|"fixed", "min": float, "max": float,
+                 "per_file": float | None} | None,
       "cookies": {"sessionid": "..."} (IG) | {name: value, ...} (FB) | None,
-      "options": {"include", "videos", "sleep-request", "directory", "filename", "archive", "api",
-                  "fallback-retries", "quick_update"},
+      "options": {"include", "videos", "sleep-request", "sleep", "directory", "filename", "archive",
+                  "api", "fallback-retries", "quick_update"},
     }
 
 Note the option keys are gallery-dl's own, so they are HYPHENATED (`sleep-request`), not
@@ -41,6 +42,9 @@ _IG_DEFAULTS: dict[str, Any] = {
     # Mirrors gallery-dl's own InstagramExtractor.request_interval. Only reached when the payload
     # carries no `pacing` block (a direct worker invocation); the manager always sends one.
     "sleep-request": [6.0, 12.0],
+    # Per-IMAGE delay, a different axis from `sleep-request` above. 0 = off, which is what a direct
+    # worker invocation with no `pacing` block gets; the manager always resolves a real value.
+    "sleep": 0.0,
     "directory": ["instagram", "{username}"],
     "filename": "{date}_{media_id}_{shortcode}.{extension}",
 }
@@ -69,6 +73,9 @@ _FB_DEFAULTS: dict[str, Any] = {
     # for CDN 429s, so flattening it to 5 s is how a soft block becomes a hard one. This keeps the
     # long tail for genuine 429s while removing the front-loaded 60 s the fallback path abuses.
     "sleep-429": "exponential:2:0:60=15",
+    # Off by default here and in `Settings`: extract_set fetches a full HTML page per photo, so
+    # Facebook already pays `sleep-request` once per image and this would double-charge it.
+    "sleep": 0.0,
     "directory": ["facebook", "{username}"],
     "filename": "{id}.{extension}",
 }
@@ -80,6 +87,11 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
 
 # Consecutive-skip limit used when `quick_update` is passed as a bare `true`.
 _QUICK_UPDATE_DEFAULT = 20
+
+# Per-image delays are emitted as a band, never a constant: a perfectly periodic request pattern is
+# trivially fingerprintable, and gallery-dl ships InstagramExtractor.request_interval as a range
+# (6.0, 12.0) for the same reason. +/-15% keeps the operator's number as the mean.
+_PER_FILE_JITTER = 0.15
 
 _IG_PATH: ConfigPath = ("extractor", "instagram")
 _FB_PATH: ConfigPath = ("extractor", "facebook")
@@ -133,6 +145,7 @@ def apply(payload: dict[str, Any], config: ConfigLike) -> list[tuple[ConfigPath,
     # from raw `options` would silently undo the anonymous filtering.
     resolved_include = _resolve_include(platform, options, anonymous)
     resolved_sleep = _resolve_sleep_request(platform, options, payload.get("pacing"))
+    resolved_per_file = _resolve_sleep_file(platform, options, payload.get("pacing"))
 
     for key, default in _PLATFORM_DEFAULTS[platform].items():
         value: Any = options.get(key, default)
@@ -140,6 +153,8 @@ def apply(payload: dict[str, Any], config: ConfigLike) -> list[tuple[ConfigPath,
             value = resolved_include
         elif key == "sleep-request":
             value = resolved_sleep
+        elif key == "sleep":
+            value = resolved_per_file
         _set(platform_path, key, value)
 
     # Logged-out, Instagram's REST /api/v1/* endpoints mostly 401; the GraphQL query_hash path is
@@ -205,6 +220,39 @@ def _resolve_sleep_request(platform: str, options: dict[str, Any], pacing: Any) 
         lo, hi = max(0.0, lo), max(0.0, hi)
         return [lo, lo] if pacing.get("mode") == "adaptive" else [lo, max(lo, hi)]
     return _PLATFORM_DEFAULTS[platform]["sleep-request"]
+
+
+def _resolve_sleep_file(platform: str, options: dict[str, Any], pacing: Any) -> Any:
+    """What gallery-dl's per-download `sleep` should be for this job.
+
+    Precedence mirrors ``_resolve_sleep_request``: an explicit per-job `sleep` is the raw gallery-dl
+    escape hatch and wins outright, then the resolved `pacing` block, then the platform default.
+
+    Unlike `sleep-request` this is **additive**, not a spacing floor — ``DownloadJob.handle_url``
+    calls ``extractor.sleep(self.sleep(), "download")`` and ``Extractor.sleep`` is a bare
+    ``time.sleep``. So the gap an operator observes is this value plus the download itself, which is
+    why the band is centred on their number rather than starting at it.
+
+    It is charged only on files actually fetched: both the archive check and the on-disk check in
+    ``handle_url`` return before the sleep, so re-running a downloaded profile pays nothing. And 0
+    is a true off switch — ``util.build_duration_func(0.0)`` returns None and gallery-dl skips the
+    call site entirely.
+    """
+    if "sleep" in options:
+        return options["sleep"]
+    seconds = 0.0
+    if isinstance(pacing, dict):
+        try:
+            seconds = max(0.0, float(pacing.get("per_file") or 0.0))
+        except (TypeError, ValueError):
+            # Same contract as the pacing block above: a hint, never a reason to fail the job.
+            return _PLATFORM_DEFAULTS[platform]["sleep"]
+    if not seconds:
+        return 0.0
+    return [
+        round(seconds * (1.0 - _PER_FILE_JITTER), 2),
+        round(seconds * (1.0 + _PER_FILE_JITTER), 2),
+    ]
 
 
 def _resolve_include(platform: str, options: dict[str, Any], anonymous: bool) -> str:

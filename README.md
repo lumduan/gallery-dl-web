@@ -250,19 +250,52 @@ requests it observed (status, content type, and a redacted 500-byte body prefix)
 event, so a block can be diagnosed without reproducing it. It carries no cookies, no request
 headers, and no URL query strings.
 
-Three places to change it, each overriding the one below:
+### Seconds per image — the second axis
+
+Everything above spaces the **API requests** that list posts. It does not touch the **image
+downloads** those requests release, and on Instagram those outnumber API requests ~30:1. Measured
+across three real runs of the same profile:
+
+| Run | Files | Elapsed | Mean gap | Median gap |
+|---|---|---|---|---|
+| A | 600 | 3783 s | 6.32 s | **2.68 s** |
+| B | 284 | 516 s | 1.82 s | **0.80 s** |
+| C | 110 | 742 s | 6.80 s | **0.92 s** |
+
+The gaps are bimodal. Most are sub-second — images arriving back to back inside one API page. A few
+are 20–160 s — the paced request at a page boundary. The mean is just an artifact of how many page
+boundaries a run happened to hit, which is why it swings from 1.8 to 6.8 across the three. **The
+sub-second burst is what a rate limiter reacts to**, and nothing above touches it.
+
+**Seconds per image** puts a floor under it, and applies in *both* modes. The number you set is the
+mean gap: it reaches gallery-dl as a ±15 % band, because a perfectly periodic request pattern is
+trivially fingerprintable. `0` turns it off. It is charged only on files actually fetched — both
+the archive check and the on-disk check return before it — so re-running a profile you already have
+stays exactly as fast as before.
+
+Defaults are Instagram `2 s` and Facebook `0`. Facebook is off deliberately: it fetches a full page
+per photo, so it already pays the request delay once per image and a second one would double-charge
+it.
+
+### Where to change it
+
+Three places, each overriding the one below:
 
 | Where | Scope | Takes effect |
 |---|---|---|
 | The download form's **Advanced options** | that job only | immediately |
 | **Settings → Download pacing** | every later job | immediately, no restart |
-| `<PLATFORM>_PACING_MODE` / `_SLEEP_REQUEST_MIN` / `_MAX` | every later job | on restart |
+| `<PLATFORM>_PACING_MODE` / `_SLEEP_REQUEST_MIN` / `_MAX` / `_SLEEP_FILE` | every later job | on restart |
 
 `MIN`/`MAX` mean different things per mode: in `adaptive` they are the floor (and starting delay)
 and the back-off ceiling; in `fixed` they are the ends of a random range sampled per request, which
 is the pre-`v0.5.0` behaviour. Defaults are Facebook `adaptive 1–30 s` and Instagram
 `adaptive 4–30 s` — Instagram's floor is deliberately more cautious, since gallery-dl's own default
 there is 6–12 s and an Instagram session ban is expensive.
+
+Note that `fixed` mode installs **no adaptive pacer at all**, so it also gives up the signature
+table, the pushback telemetry and the volume ramp. Seconds per image still works there; none of the
+rest does.
 
 **If you do get blocked, raise the floor and wait before retrying** — retrying immediately extends
 the block, and back-off can only reduce the chance of *reaching* one: gallery-dl ends the run the

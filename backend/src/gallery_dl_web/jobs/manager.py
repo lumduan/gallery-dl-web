@@ -26,7 +26,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
-from gallery_dl_web.config import Settings, normalize_pacing
+from gallery_dl_web.config import Settings, merge_pacing, normalize_pacing
 from gallery_dl_web.cookies.store import CookieStore
 from gallery_dl_web.gallerydl.errors import (
     LOGIN_WALL_MESSAGE,
@@ -994,16 +994,21 @@ class JobManager:
         legitimately backed off to more than about a quarter of ``stall_cap`` would be killed as
         stalled while it is behaving exactly as designed.
         """
-        resolved = (
-            normalize_pacing(job_override)
-            or self._pacing_store.get(platform)
-            or self._settings.pacing_for(platform)
-        )
+        default = self._settings.pacing_for(platform)
+        resolved = normalize_pacing(job_override) or self._pacing_store.get(platform) or default
+        # `per_file` is independent of mode/min/max, so it back-fills per field rather than losing
+        # to whichever layer won the block — otherwise a per-job override, or a `pacing.json`
+        # written before the field existed, silently turns the per-image delay off.
+        resolved = merge_pacing(resolved, default)
         if resolved is None:
             return None
         ceiling = self._settings.stall_cap_seconds / 4.0
         if resolved["max"] > ceiling:
             resolved = {**resolved, "max": max(resolved["min"], ceiling)}
+        # Same deadline, same argument: a per-file delay past a quarter of the cap would make the
+        # progress deadline a coin flip on a slow file.
+        if (per_file := resolved.get("per_file")) and per_file > ceiling:
+            resolved = {**resolved, "per_file": ceiling}
         return resolved
 
     def _build_payload(

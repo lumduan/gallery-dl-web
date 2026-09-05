@@ -17,7 +17,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from gallery_dl_web.config import Settings, normalize_pacing
+from gallery_dl_web.config import Settings, merge_pacing, normalize_pacing
 
 logger = logging.getLogger(__name__)
 
@@ -57,8 +57,14 @@ class PacingStore:
         return normalize_pacing(self._data.get(platform))
 
     def effective(self, platform: str) -> dict[str, Any] | None:
-        """What a job on this platform would actually use: the override, else the env default."""
-        return self.get(platform) or self._settings.pacing_for(platform)
+        """What a job on this platform would actually use: the override, else the env default.
+
+        ``merge_pacing`` is what keeps an override written before ``per_file`` existed from reading
+        as "the operator turned the per-image delay off"; the whole-block fallback below covers
+        ``mode``/``min``/``max``, which only make sense together.
+        """
+        default = self._settings.pacing_for(platform)
+        return merge_pacing(self.get(platform), default) or default
 
     def status(self) -> dict[str, Any]:
         """What the Settings UI renders: the effective values plus whether each is an override.
@@ -85,6 +91,7 @@ class PacingStore:
             if normalized is None:
                 raise ValueError(
                     "pacing must be {'mode': 'adaptive'|'fixed', 'min': number, 'max': number}"
+                    " with an optional 'per_file': number"
                 )
             self._data[platform] = normalized
         self.save()
