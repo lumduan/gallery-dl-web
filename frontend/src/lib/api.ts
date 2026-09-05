@@ -25,14 +25,22 @@ export interface JobSummary {
 export type PacingMode = "adaptive" | "fixed";
 
 /**
- * Per-request pacing for one platform. `min`/`max` mean different things per mode: in `adaptive`
+ * Pacing for one platform, on two independent axes.
+ *
+ * `min`/`max` space the extractor's API requests and mean different things per mode: in `adaptive`
  * they are the floor (and starting delay) and the back-off ceiling; in `fixed` they are the ends
  * of a random range sampled per request.
+ *
+ * `per_file` is the other axis and applies in BOTH modes: seconds between
+ * the individual image downloads a single API request releases. One Instagram request returns ~30
+ * posts whose images then download back to back, so `min`/`max` never touch them. 0 disables it;
+ * `null` means "not specified" and inherits the server default.
  */
 export interface Pacing {
   mode: PacingMode;
   min: number;
   max: number;
+  per_file: number | null;
 }
 
 /** As the API reports it: the effective values, plus whether the operator set them. */

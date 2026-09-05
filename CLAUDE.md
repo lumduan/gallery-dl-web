@@ -277,6 +277,32 @@ store (`<data_dir>/pacing.json`, editable in Settings with no restart) -> env `S
 `_PLATFORM_DEFAULTS`. Like `anonymous`, `pacing` is a **top-level payload key** popped out of
 `options` by `_run_job`, because `config_builder` only reads keys it knows about.
 
+**`per_file` is a second, independent axis, and it deliberately does NOT go through the pacer.**
+`MIN`/`MAX` space the extractor's API requests; `per_file` spaces the **image downloads** one
+request releases, which on Instagram outnumber API requests ~30:1 and were previously unpaced
+entirely — measured runs showed a 0.8-2.7 s median gap between consecutive files while the API
+calls sat 20 s apart, and it is that burst, not the run average, that a rate limiter reacts to.
+It reaches gallery-dl as its own `sleep` option from `config_builder._resolve_sleep_file`, emitted
+as a ±15% band rather than a constant. Three consequences worth knowing:
+
+- **It works in `fixed` mode**, where `worker.py`'s `mode != "adaptive"` gate installs no pacer at
+  all. A pacer-based implementation would have been silently dead for anyone on `fixed`.
+- **Skips never pay it.** `DownloadJob.handle_url` returns on both the archive check and the
+  on-disk check *before* `extractor.sleep(self.sleep(), "download")`, so re-running a downloaded
+  profile is unaffected. `tests/gallerydl/test_upstream_pins.py` pins that ordering, because a
+  gallery-dl bump that moved the sleep would turn a seconds-long refresh into an hours-long one
+  without raising anything.
+- **It is additive, unlike everything else here.** `Extractor.sleep` is a bare `time.sleep`, where
+  `_interval_request` subtracts elapsed time. So the observed gap is the value plus the download,
+  which is why the band is centred on the operator's number rather than starting at it.
+
+**`normalize_pacing` returns a freshly built dict, so a field it does not name is dropped** at all
+four call sites. `per_file` is therefore `float | None` there: **absent means "no opinion", not
+zero**, and `merge_pacing` fills it from the layer below. Without that a `pacing.json` written
+before the field existed — or any per-job override, since `UrlForm` builds its block field by
+field — would read as "the operator turned the per-image delay off" and veto the default. An
+explicit `0` is still an opinion and is kept.
+
 **The pacing ceiling is coupled to the stall detector** — `_resolve_pacing` clamps it to
 `stall_cap_seconds / 4`, and `pacing.HARD_MAX_DELAY` clamps a hand-written payload — because a job
 legitimately backed off past the progress deadline gets killed as stalled, and a Facebook retry

@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 
 class PacingSettings(BaseModel):
-    """Per-request pacing for one platform, as the UI shows it."""
+    """Pacing for one platform, as the UI shows it: per-request (min/max) and per-image."""
 
     mode: Literal["adaptive", "fixed"] = Field(
         description=(
@@ -17,6 +17,16 @@ class PacingSettings(BaseModel):
     )
     min: float = Field(ge=0, description="Seconds. Floor (adaptive) or range low (fixed).")
     max: float = Field(ge=0, description="Seconds. Ceiling (adaptive) or range high (fixed).")
+    per_file: float | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Seconds between individual image downloads, jittered +/-15%. A different axis from "
+            "min/max, which space the extractor's API requests: one Instagram request returns ~30 "
+            "posts whose images then download back to back. Applies in both modes. 0 disables it; "
+            "null means 'not specified' and inherits the environment default."
+        ),
+    )
 
 
 class SettingsResponse(BaseModel):

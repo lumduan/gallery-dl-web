@@ -15,12 +15,12 @@ const PLATFORMS: { id: Platform; label: string; hint: string }[] = [
   {
     id: "facebook",
     label: "Facebook",
-    hint: "Facebook fetches a full page for every single photo, so the delay is paid once per image — this is the one worth tuning.",
+    hint: "Facebook fetches a full page for every single photo, so the request delay is already paid once per image. Tune the floor here and leave seconds-per-image at 0, or you pay twice.",
   },
   {
     id: "instagram",
     label: "Instagram",
-    hint: "Instagram returns ~30 posts per request, so the delay spreads across them and costs far less. Its floor is deliberately more cautious.",
+    hint: "Instagram returns ~30 posts per request, so the request delay spreads across them and costs far less — which is exactly why the per-image value matters more here than the floor does.",
   },
 ];
 
@@ -43,7 +43,15 @@ export function PacingSetting() {
 
   function valueFor(platform: Platform): Pacing | null {
     const live = status?.[platform];
-    return draft[platform] ?? (live ? { mode: live.mode, min: live.min, max: live.max } : null);
+    // Field by field, so every field has to be listed: one left out here is silently dropped on
+    // the next Save, which for `per_file` would read to the server as "turn the per-image delay
+    // off" rather than "leave it alone".
+    return (
+      draft[platform] ??
+      (live
+        ? { mode: live.mode, min: live.min, max: live.max, per_file: live.per_file }
+        : null)
+    );
   }
 
   function edit(platform: Platform, patch: Partial<Pacing>) {
@@ -76,6 +84,14 @@ export function PacingSetting() {
           floor rises on its own as a run gets long, since that is when a block actually happens.
           Choose <strong>Fixed</strong> to sleep a random amount in the range on every request
           instead.
+        </p>
+        <p className="text-xs text-base-content/60">
+          <strong>Seconds per image</strong> is a separate control and works in both modes. The
+          settings above space the <em>requests</em> that list posts; one Instagram request returns
+          about 30 posts, whose images then download back to back with nothing between them. This
+          puts a floor under that burst, jittered slightly so the gaps are not perfectly regular.
+          Set it to 0 to turn it off. It is charged only on files actually downloaded, so
+          re-running a profile you already have stays fast.
         </p>
 
         {PLATFORMS.map(({ id, label, hint }) => {
@@ -133,6 +149,19 @@ export function PacingSetting() {
                     className="input input-bordered input-sm w-24"
                     value={value.max}
                     onChange={(e) => edit(id, { max: Number(e.target.value) })}
+                  />
+                </label>
+                <label className="form-control">
+                  <div className="label py-1">
+                    <span className="label-text text-xs">Seconds per image</span>
+                  </div>
+                  <input
+                    type="number"
+                    min={0}
+                    step="0.5"
+                    className="input input-bordered input-sm w-28"
+                    value={value.per_file ?? 0}
+                    onChange={(e) => edit(id, { per_file: Number(e.target.value) })}
                   />
                 </label>
                 <button

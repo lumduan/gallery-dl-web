@@ -15,8 +15,18 @@ def _state() -> JobState:
 def test_env_defaults_are_adaptive_and_facebook_is_the_fast_one(tmp_settings: Settings) -> None:
     """Facebook fetches a page per photo where Instagram gets ~30 posts per request, so the same
     delay costs Facebook ~30x more. Its floor is correspondingly lower."""
-    assert tmp_settings.pacing_for("facebook") == {"mode": "adaptive", "min": 1.0, "max": 30.0}
-    assert tmp_settings.pacing_for("instagram") == {"mode": "adaptive", "min": 4.0, "max": 30.0}
+    assert tmp_settings.pacing_for("facebook") == {
+        "mode": "adaptive",
+        "min": 1.0,
+        "max": 30.0,
+        "per_file": 0.0,
+    }
+    assert tmp_settings.pacing_for("instagram") == {
+        "mode": "adaptive",
+        "min": 4.0,
+        "max": 30.0,
+        "per_file": 2.0,
+    }
     assert tmp_settings.pacing_for("tiktok") is None
 
 
@@ -24,17 +34,32 @@ def test_fixed_mode_is_still_available(tmp_settings: Settings) -> None:
     tmp_settings.facebook_pacing_mode = "fixed"
     tmp_settings.facebook_sleep_request_min = 3
     tmp_settings.facebook_sleep_request_max = 8
-    assert tmp_settings.pacing_for("facebook") == {"mode": "fixed", "min": 3.0, "max": 8.0}
+    assert tmp_settings.pacing_for("facebook") == {
+        "mode": "fixed",
+        "min": 3.0,
+        "max": 8.0,
+        "per_file": 0.0,
+    }
 
 
 def test_bad_values_are_repaired_not_propagated(tmp_settings: Settings) -> None:
     # An inverted range would make gallery-dl's random.uniform raise.
     tmp_settings.facebook_sleep_request_min = 9
     tmp_settings.facebook_sleep_request_max = 4
-    assert tmp_settings.pacing_for("facebook") == {"mode": "adaptive", "min": 9.0, "max": 9.0}
+    assert tmp_settings.pacing_for("facebook") == {
+        "mode": "adaptive",
+        "min": 9.0,
+        "max": 9.0,
+        "per_file": 0.0,
+    }
     tmp_settings.facebook_sleep_request_min = -1
     tmp_settings.facebook_sleep_request_max = -1
-    assert tmp_settings.pacing_for("facebook") == {"mode": "adaptive", "min": 0.0, "max": 0.0}
+    assert tmp_settings.pacing_for("facebook") == {
+        "mode": "adaptive",
+        "min": 0.0,
+        "max": 0.0,
+        "per_file": 0.0,
+    }
     # An unrecognised mode means "this layer has no opinion", not a broken job.
     tmp_settings.facebook_pacing_mode = "turbo"
     assert tmp_settings.pacing_for("facebook") is None
@@ -45,7 +70,7 @@ def test_payload_carries_pacing_at_the_top_level(job_manager: Any, tmp_settings:
     tmp_settings.facebook_sleep_request_min = 2
     tmp_settings.facebook_sleep_request_max = 20
     payload = job_manager._build_payload(_state(), {}, {"c_user": "1"}, False)
-    assert payload["pacing"] == {"mode": "adaptive", "min": 2.0, "max": 20.0}
+    assert payload["pacing"] == {"mode": "adaptive", "min": 2.0, "max": 20.0, "per_file": 0.0}
     assert "pacing" not in payload["options"]
 
 
@@ -84,3 +109,70 @@ def test_the_clamp_never_inverts_the_range(job_manager: Any, tmp_settings: Setti
     pacing = job_manager._build_payload(_state(), {}, None, True)["pacing"]
     assert pacing["min"] == 30.0
     assert pacing["max"] == 30.0
+
+
+# --- per-image pacing rides the same chain, with one difference -----------------------------------
+#
+# `per_file` is orthogonal to mode/min/max, so it merges per FIELD rather than losing to whichever
+# layer won the block. Without that, a per-job override -- or a `pacing.json` written before the
+# field existed -- would silently switch the per-image delay off.
+
+
+def test_per_file_reaches_the_payload_from_the_env(
+    job_manager: Any, tmp_settings: Settings
+) -> None:
+    tmp_settings.facebook_sleep_file = 3.5
+    assert job_manager._build_payload(_state(), {}, None, True)["pacing"]["per_file"] == 3.5
+
+
+def test_a_stored_override_written_before_the_field_existed_inherits_it(
+    job_manager: Any, tmp_settings: Settings
+) -> None:
+    """THE upgrade case. A v0.6.0 `pacing.json` has no `per_file` key at all, and reading that
+    absence as "the operator chose zero" would veto the default on every existing install."""
+    tmp_settings.facebook_sleep_file = 2.0
+    job_manager._pacing_store.update("facebook", {"mode": "fixed", "min": 3.0, "max": 8.0})
+    pacing = job_manager._build_payload(_state(), {}, None, True)["pacing"]
+    assert pacing["mode"] == "fixed", "the stored block must still win mode/min/max"
+    assert pacing["per_file"] == 2.0, "but per_file falls through to the env"
+
+
+def test_a_stored_zero_is_an_opinion_and_is_kept(job_manager: Any, tmp_settings: Settings) -> None:
+    """The other half of the same rule: absent means 'no opinion', an explicit 0 means 'off'."""
+    tmp_settings.facebook_sleep_file = 2.0
+    job_manager._pacing_store.update(
+        "facebook", {"mode": "fixed", "min": 3.0, "max": 8.0, "per_file": 0}
+    )
+    assert job_manager._build_payload(_state(), {}, None, True)["pacing"]["per_file"] == 0.0
+
+
+def test_a_per_job_override_does_not_drop_per_file(
+    job_manager: Any, tmp_settings: Settings
+) -> None:
+    """UrlForm builds its block field by field, so the job layer routinely omits per_file."""
+    tmp_settings.facebook_sleep_file = 2.0
+    job = {"mode": "adaptive", "min": 0.5, "max": 5.0}
+    assert job_manager._build_payload(_state(), {}, None, True, job)["pacing"]["per_file"] == 2.0
+
+
+def test_per_file_is_capped_outright(job_manager: Any, tmp_settings: Settings) -> None:
+    """`MAX_PER_FILE_DELAY`. At the default 600 s stall cap this is the bound that binds, and it
+    binds before the stall clamp below ever gets a chance to."""
+    tmp_settings.stall_cap_seconds = 600.0
+    tmp_settings.facebook_sleep_file = 500
+    assert job_manager._build_payload(_state(), {}, None, True)["pacing"]["per_file"] == 60.0
+
+
+def test_per_file_is_also_clamped_against_a_tightened_stall_detector(
+    job_manager: Any, tmp_settings: Settings
+) -> None:
+    """The second bound, tested where it is the one doing the work.
+
+    An operator who tightens `stall_cap_seconds` below 240 pulls the progress deadline under the
+    60 s hard cap, and the deadline is measured in inter-file time — so a per-file delay near it
+    would make a healthy job look stalled. Asserting this at the default cap would prove nothing,
+    because 60 would answer first and the test would pass for the wrong reason.
+    """
+    tmp_settings.stall_cap_seconds = 120.0  # ceiling 30 s, well under MAX_PER_FILE_DELAY
+    tmp_settings.facebook_sleep_file = 50
+    assert job_manager._build_payload(_state(), {}, None, True)["pacing"]["per_file"] == 30.0
