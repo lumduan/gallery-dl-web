@@ -10,6 +10,7 @@ from fastapi import Request
 
 from gallery_dl_web.config import Settings
 from gallery_dl_web.cookies.store import CookieStore
+from gallery_dl_web.files.index import FileIndex
 from gallery_dl_web.jobs.manager import JobManager
 from gallery_dl_web.pacing.store import PacingStore
 from gallery_dl_web.profiles.store import ProfileStore
@@ -33,3 +34,7 @@ def get_job_manager(request: Request) -> JobManager:
 
 def get_profile_store(request: Request) -> ProfileStore:
     return request.app.state.profile_store  # type: ignore[no-any-return]
+
+
+def get_file_index(request: Request) -> FileIndex:
+    return request.app.state.file_index  # type: ignore[no-any-return]

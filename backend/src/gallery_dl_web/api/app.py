@@ -22,6 +22,7 @@ from gallery_dl_web.api import (
 )
 from gallery_dl_web.config import Settings, get_settings
 from gallery_dl_web.cookies.store import CookieStore
+from gallery_dl_web.files.index import FileIndex
 from gallery_dl_web.jobs.manager import JobManager
 from gallery_dl_web.pacing.store import PacingStore
 from gallery_dl_web.profiles.store import ProfileStore
@@ -130,6 +131,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.cookie_store = CookieStore(settings.cookies_path)
     app.state.pacing_store = PacingStore(settings.data_dir / "pacing.json", settings)
     app.state.profile_store = ProfileStore(settings)
+    app.state.file_index = FileIndex(settings.downloads_dir)
     app.state.job_manager = JobManager(
         settings, app.state.cookie_store, app.state.profile_store, app.state.pacing_store
     )

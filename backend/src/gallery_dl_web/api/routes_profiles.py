@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import tempfile
 import zipfile
@@ -179,12 +180,17 @@ async def get_zip(
 
     zip_path = settings.data_dir / "zips" / f"{platform}_{name}.zip"
     # Build if missing or older than any source file.
-    files = _profile_files(pdir)
+    #
+    # Both halves run in a thread. Walking a profile is a NAS round trip per entry and zipping it
+    # reads and deflates every byte, so doing either inline would block the event loop for as long
+    # as the build takes -- the same failure that made `GET /api/files` take the whole API down,
+    # `/health` included. `to_thread` here mirrors `ProfileStore.reconcile`.
+    files = await asyncio.to_thread(_profile_files, pdir)
     if not files:
         raise HTTPException(status_code=404, detail="profile has no media")
-    newest = max(f.stat().st_mtime for f in files)
+    newest = await asyncio.to_thread(_newest_mtime, files)
     if not zip_path.exists() or zip_path.stat().st_mtime < newest:
-        _build_zip(zip_path, pdir, files)
+        await asyncio.to_thread(_build_zip, zip_path, pdir, files)
 
     os.utime(zip_path, None)  # refresh mtime -> TTL counts from last access
     return FileResponse(zip_path, media_type="application/zip", filename=f"{name}.zip")
@@ -212,6 +218,11 @@ def _profile_files(pdir: Path) -> list[Path]:
                 continue
             out.append(Path(root) / fn)
     return out
+
+
+def _newest_mtime(files: list[Path]) -> float:
+    """Blocking: one stat per file. Called in a thread."""
+    return max(f.stat().st_mtime for f in files)
 
 
 def _build_zip(zip_path: Path, pdir: Path, files: list[Path]) -> None:

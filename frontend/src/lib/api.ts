@@ -141,8 +141,21 @@ export async function updateCookies(body: {
   return asJson(res);
 }
 
-export async function listFiles(): Promise<{ files: FileEntry[] }> {
-  return asJson(await fetch("/api/files"));
+/**
+ * A *page* of the downloads listing, newest first.
+ *
+ * `total` is what is on disk, not `files.length`. A real install holds hundreds of thousands, and
+ * serialising all of them was tens of megabytes of JSON for a table that shows a screenful.
+ */
+export interface FileListResponse {
+  files: FileEntry[];
+  total: number;
+  truncated: boolean;
+}
+
+export async function listFiles(limit?: number): Promise<FileListResponse> {
+  const qs = limit === undefined ? "" : `?limit=${limit}`;
+  return asJson(await fetch(`/api/files${qs}`));
 }
 
 export function downloadUrl(path: string): string {
