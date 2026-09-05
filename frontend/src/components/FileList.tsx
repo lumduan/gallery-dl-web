@@ -1,7 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
-import { downloadUrl, listFiles, type FileEntry } from "@/lib/api";
+import { downloadUrl, listFiles, type FileListResponse } from "@/lib/api";
 
 function formatSize(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -10,22 +11,33 @@ function formatSize(n: number): string {
 }
 
 export function FileList() {
-  const [files, setFiles] = useState<FileEntry[] | null>(null);
+  const [data, setData] = useState<FileListResponse | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     listFiles()
-      .then((r) => setFiles(r.files))
+      .then(setData)
       .catch((e: unknown) => setErr(e instanceof Error ? e.message : "failed to load"));
   }, []);
 
   if (err) return <div className="alert alert-error">{err}</div>;
-  if (files === null) return <p className="text-base-content/60">Loading…</p>;
+  if (data === null) return <p className="text-base-content/60">Loading…</p>;
+  const files = data.files;
   if (files.length === 0)
     return <p className="text-base-content/60">No downloads yet. Submit a URL to get started.</p>;
 
   return (
     <div className="overflow-x-auto">
+      {data.truncated && (
+        <p className="text-xs text-base-content/60 pb-2">
+          Showing the {files.length.toLocaleString()} newest of{" "}
+          {data.total.toLocaleString()} files. Open a profile from{" "}
+          <Link className="link" href="/profiles">
+            Profiles
+          </Link>{" "}
+          to browse the rest.
+        </p>
+      )}
       <table className="table table-zebra">
         <thead>
           <tr>

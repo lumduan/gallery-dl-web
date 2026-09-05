@@ -57,6 +57,7 @@ container. Enable both together in `.env`:
 - `backend/src/gallery_dl_web/gallerydl/config_builder.py` — pure payload→`config.set` translator.
 - `backend/src/gallery_dl_web/gallerydl/pacing.py` — the adaptive request pacer + its three patches.
 - `backend/src/gallery_dl_web/pacing/store.py` — operator pacing overrides (`<data_dir>/pacing.json`).
+- `backend/src/gallery_dl_web/files/index.py` — the downloads listing, off the event loop.
 - `backend/src/gallery_dl_web/api/routes_jobs.py` — SSE endpoint + zip.
 - `backend/src/gallery_dl_web/profiles/store.py` — per-profile `metadata.json` reconciliation.
 - `frontend/src/app/jobs/[id]/page.tsx` + `components/JobProgress.tsx` — SSE consumer.
@@ -218,6 +219,31 @@ That is why `archive_path` is stored in `metadata.json` — deletion needs it.
 
 **Every filesystem path from a request goes through `api/paths.py:resolve_within`.** It is the single
 traversal guard for `/api/files`, profile files, thumbnails, and zips.
+
+**No handler may touch the downloads tree synchronously — the media dir is usually a NAS.** A
+blocking walk inside an `async def` is not a slow endpoint, it is a **global outage**: the event
+loop serves nothing while it runs, `/health` included, so Docker marks the backend unhealthy and
+every other request — SSE streams, `/api/jobs` — stalls with it. Observed live 2026-09-05 on an
+install with **427,009 files over NFS**; `GET /api/files` was doing exactly this and the main thread
+sat in uninterruptible disk sleep while the 5 s health probe timed out three times.
+
+`files/index.py` is the pattern, and all three parts are load-bearing:
+`asyncio.to_thread` (as `ProfileStore.reconcile` already did), a **single-flight lock**, and a short
+TTL. The lock is not an optimisation — moving the walk off the loop *removes* the accidental
+serialisation the block used to provide, so without it five page loads become five concurrent
+427k-file walks, strictly worse than the bug. `routes_profiles.py`'s zip build threads both halves
+for the same reason: it walks the profile *and* deflates every byte.
+
+`/api/files` is also **paged** (`limit`, default 1000, plus a real `total`) — serialising the full
+tree was tens of megabytes of JSON for a table that shows a screenful.
+
+⚠️ **Testing this property is where it gets subtle, and two obvious tests both passed with the
+offload deleted.** "Start the listing, sleep, then time `/health`" fails because the blocking walk
+completes *inside that very sleep*, leaving the timer to measure an idle loop. "Launch both, assert
+`/health` finishes first" fails because ordering through `httpx` is decided by its own await points,
+not by the blocking. `tests/files/test_index.py` instead **counts how many times the loop got to run
+while a walk was in flight** — zero means blocked, dozens means threaded — which is the property
+itself rather than a proxy for it. Both it and the single-flight test were verified by sabotage.
 
 **Pacing is adaptive, and the shape of the problem is asymmetric.** Instagram gets ~30 posts per
 JSON request, so a delay amortizes away; Facebook fetches one full 1-3 MB HTML page *per photo*
