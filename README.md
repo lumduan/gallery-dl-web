@@ -114,6 +114,28 @@ seed it with existing media, copy it as UID 1001 — copying as root onto an NFS
 every download. The backend refuses to start a job when it detects this
 (`reason: downloads-dir-unwritable`).
 
+#### If the NAS is an autofs/`x-systemd.automount` mount, it will not survive a reboot on its own
+
+Docker's restore pass runs seconds after boot. If the NFS share is not mounted yet, `mkdir` on the
+untriggered autofs mountpoint returns `ENODEV` and the backend container **never starts**:
+
+```
+error while creating mount source path '/mnt/downloads/gallery': mkdir …: no such device
+```
+
+`restart: unless-stopped` does not cover this. The container never reached a running state, so
+there is no exit for the restart policy to count (`RestartCount` stays 0), and the stack stays down
+until someone notices — the UI just answers `502 Backend unreachable`.
+
+Observed 2026-09-10 on the reference install: the NAS took ~8.5 min to serve NFS after a cold boot
+while Docker gave up retrying after ~6, and the backend sat dead for 9 hours. A sibling container
+binding the same share survived only because its last retry landed 0.14 s after the mount landed.
+
+The fix is a host-level one, not an app-level one — a `docker-nas-mount-reconcile.service` systemd
+oneshot ordered **after** `docker.service` that waits for the NAS mounts and then `docker start`s
+any container whose start failed with a mount error. Ordering it after Docker matters: making
+Docker itself wait on the NAS would let a NAS outage hold up every unrelated container on the host.
+
 ## Project layout
 
 ```

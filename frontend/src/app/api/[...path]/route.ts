@@ -23,11 +23,32 @@ async function proxy(req: NextRequest, ctx: Ctx): Promise<Response> {
   if (accept) headers["accept"] = accept;
 
   const hasBody = req.method !== "GET" && req.method !== "HEAD";
-  const upstream = await fetch(target, {
-    method: req.method,
-    headers,
-    body: hasBody ? await req.arrayBuffer() : undefined,
-  });
+
+  let upstream: Response;
+  try {
+    upstream = await fetch(target, {
+      method: req.method,
+      headers,
+      body: hasBody ? await req.arrayBuffer() : undefined,
+    });
+  } catch (err) {
+    // The backend is unreachable: container down, wrong BACKEND_URL, DNS failure. Letting the
+    // rejection escape is NOT equivalent — Next answers it with a plain-text 500 whose body is
+    // the literal string "Internal Server Error", and `asJson` in lib/api.ts falls back to
+    // res.statusText when the body will not parse as JSON. So that string became the message in
+    // every error panel, telling the operator nothing. Observed 2026-09-10, when the backend
+    // container stayed down after a reboot and the whole UI said only "Internal Server Error".
+    //
+    // Returning a JSON `detail` is all it takes: asJson already prefers that field, so every
+    // existing `alert alert-error` site shows the real cause with no component changes.
+    // 502 rather than 500 — the proxy is healthy, the upstream is not.
+    const cause = err instanceof Error ? err.message : String(err);
+    console.error(`[api-proxy] ${req.method} ${target} failed: ${cause}`);
+    return Response.json(
+      { detail: `Backend unreachable at ${BACKEND_URL} — is the backend container running?` },
+      { status: 502, headers: { "cache-control": "no-cache" } },
+    );
+  }
 
   const respHeaders = new Headers();
   const upstreamCt = upstream.headers.get("content-type");

@@ -51,6 +51,16 @@ container. Enable both together in `.env`:
 `DOWNLOADS_DIR=/mnt/...` plus `COMPOSE_FILE=docker-compose.yml:docker-compose.hostdir.yml`
 (compose reads `COMPOSE_FILE` automatically, so `docker compose up -d` is unchanged).
 
+⚠️ **On an autofs/NFS path that overlay does not survive a reboot, and the restart policy will not
+save it.** Docker's restore pass runs seconds after boot; `mkdir` on an untriggered autofs
+mountpoint returns `ENODEV`, so the container never starts (`… mkdir …: no such device`). Because it
+never reached a running state there is no exit for `unless-stopped` to count — `RestartCount` stays
+0 and the stack stays down indefinitely. This is a **host** problem, not an app one: the fix is a
+`docker-nas-mount-reconcile.service` oneshot ordered *after* `docker.service` that waits for the
+mounts and then `docker start`s any container whose start failed with a mount error. Ordering it
+after Docker is deliberate — making Docker wait on the NAS would let a NAS outage hold every
+unrelated container on the host hostage.
+
 ## Key files
 - `backend/src/gallery_dl_web/gallerydl/worker.py` — subprocess entry; the load-bearing contract.
 - `backend/src/gallery_dl_web/jobs/manager.py` — asyncio orchestrator (spawn/fan-out/replay/stall-retry/GC).
@@ -357,7 +367,17 @@ healthy job killed. Never *flatten* `sleep-429`: `downloader/http.py` inherits
 *both* compose files (env vars are uppercase field names).
 
 **`/health` is at the backend root, not under `/api`.** The frontend serves its own `/api/health`
-locally (Dockerfile HEALTHCHECK); the catch-all proxy only forwards `/api/*`.
+locally (Dockerfile HEALTHCHECK); the catch-all proxy only forwards `/api/*`. That is also why the
+frontend container reports **healthy while the backend is dead** — its probe never crosses the wire.
+
+**The proxy must catch its own upstream fetch, and the reason is `asJson`.** An uncaught
+`ECONNREFUSED` escapes the route handler and Next answers with a *plain-text* 500 whose body is the
+literal string `Internal Server Error`. `lib/api.ts:asJson` falls back to `res.statusText` when the
+body will not parse as JSON, so that string lands verbatim in all six `alert alert-error` panels and
+tells the operator nothing. Returning `Response.json({ detail }, { status: 502 })` is the whole fix:
+`asJson` already *prefers* a JSON `detail`, so every existing error surface improves with no
+component change. Don't "simplify" the try/catch away — the failure it prevents is invisible in
+tests and only shows up when the backend is actually down.
 
 **The "system" theme is the *absence* of `data-theme` on `<html>`, not a value.** DaisyUI emits
 `--prefersdark` as `@media (prefers-color-scheme: dark) { :root:not([data-theme]) { … } }`, so
