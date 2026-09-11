@@ -28,6 +28,13 @@
 #   * If it lives under an autofs/NFS mount, make sure the share is actually mounted BEFORE
 #     starting the stack — otherwise Docker binds the empty trigger directory and the container
 #     never sees the real share. `ls <dir>` first, then `docker compose up -d`.
+#     ➡️ SUPERSEDED FOR REBOOTS (2026-09-10) — that pre-flight is for MANUAL starts and by
+#     construction does nothing on an unattended boot. The reboot failure is a different, louder
+#     one: Docker's restore pass hits the untriggered autofs mountpoint and `mkdir` returns ENODEV,
+#         error while creating mount source path '<dir>': mkdir <dir>: no such device
+#     so the container never starts at all. `restart: unless-stopped` does NOT cover it — the
+#     container never ran, so there is no exit for the policy to count. Fix it at the host with a
+#     mount-reconciler unit; see README "Storing media on another disk / a NAS".
 #   * DATA_DIR stays on the named volume: cookies, archives, thumbnails and profile metadata are
 #     small and are deliberately kept out of the media directory.
 

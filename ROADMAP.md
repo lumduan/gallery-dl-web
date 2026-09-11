@@ -21,6 +21,8 @@ flowchart TD
     P8 --> P9["9 · Pushback signatures<br/>what a block actually looks like<br/>DONE — v0.6.0"]
     P8 --> P10["10 · Per-image pacing<br/>the burst nothing was pacing<br/>DONE"]
     P9 --> P10
+    P4 --> P11["11 · The listing outage<br/>a blocking walk is a global outage<br/>DONE"]
+    P4 --> P12["12 · Surviving a reboot<br/>NAS-backed stack + a legible 502<br/>DONE"]
 
     classDef done     fill:#d4f4dd,stroke:#2d8a4e,color:#1a5c33
     classDef active   fill:#fff3cd,stroke:#cc9a06,color:#7a5c04
@@ -28,6 +30,8 @@ flowchart TD
 
     class P9 done
     class P10 done
+    class P11 done
+    class P12 done
     class P1 done
     class P2 done
     class P3 done
@@ -52,9 +56,10 @@ flowchart TD
 | **9 · Pushback signatures** | ✅ DONE | The adaptive back-off had never engaged: a captured block showed `delay == floor` on all 50 buffered requests, every one classified `clean` — the fatal one included. **Instagram signals a block with a 302 to its bare home page**, not the hypothesised HTTP 200 + `{"status":"fail"}` and not a 429; the old detector's URL marker looked for `/accounts/login`, and its body scan could never fire because `requests` dispatches hooks before buffering. Pushback is now a per-platform **signature table** (`signatures.py`) with four tiers — `UNKNOWN` no longer counts as clean — plus per-request telemetry flushed on terminal events *and* on a kill, a `pushback` SSE event, and `errors.py` reporting a block as a rate limit instead of a traceback. Media downloads no longer decay the back-off. Five CI gates green (**90.8%** coverage); **live-captured 2026-08-26** — block reproduced at 859 downloads / 885 s; **`v0.6.0` tagged 2026-08-27** | — |
 | **10 · Per-image pacing** | ✅ DONE | Everything phases 8-9 built paces the **API requests** that list posts; nothing paced the **image downloads** those requests release, and on Instagram they outnumber API requests ~30:1. Measured across three real runs the median gap between consecutive files was **0.8-2.7 s** while the API calls sat 20 s apart — a sub-second burst is what a rate limiter reacts to, and the run *mean* (1.8-6.8 s across the same three) only reflects how many page boundaries were hit. New **seconds per image** control on the same three surfaces, reaching gallery-dl's own `sleep` as a ±15% band. Defaults IG **2 s**, FB **0** (it already pays the request delay once per photo). Works in `fixed` mode too, where no pacer is installed at all, and costs nothing on skips | — |
 | **11 · The listing outage** | ✅ DONE | `GET /api/files` ran `os.walk` inline in its `async def`. On a NAS-backed install that is not a slow endpoint but a **global outage** — the event loop serves nothing while it walks, `/health` included, so Docker marked the backend unhealthy and every request stalled. Found live 2026-09-05 at **427,009 files over NFS** with the main thread in uninterruptible disk sleep. Now `files/index.py`: `to_thread` + a **single-flight lock** (moving off the loop removes the accidental serialisation, so five reloads would otherwise be five concurrent walks) + a 30 s TTL, and the response is paged with a real `total`. The zip route threads its walk and deflate too. Both properties verified by sabotage; two earlier, plausible-looking tests passed with the offload deleted | — |
+| **12 · Surviving a reboot** | ✅ DONE | The backend was down **9 hours** after a host reboot and the UI said only *Internal Server Error*. Storage was never at fault. On an autofs/NFS path Docker's restore pass runs seconds after boot, `mkdir` on the untriggered mountpoint returns **ENODEV**, and the container never starts — so `unless-stopped` cannot help, because there is no exit to count (`RestartCount` 0). Host-wide: **five services, four projects, one cause**; the NVR lost 9 h and two capture engines 1 h 34 m. A sibling on the same share survived by **0.14 s**. Fixed at the host with a mount reconciler ordered *after* `docker.service` (making Docker wait on the NAS would hold every unrelated container hostage), and in-app by having the proxy return `502 {detail}` instead of letting `ECONNREFUSED` become a bare 500 — `asJson` already prefers `detail`, so all six error panels improved with no component change | — |
 | **D1 · Operator cookies** | ✅ DONE | Real IG `sessionid` + FB cookies in use; live downloads confirmed 2026-07-23 | — |
 
-> **All phases are complete; the last release is `v0.6.0` and phase 10 is merged but unreleased**
+> **All phases are complete; the last release is `v0.6.0` and phases 10-12 are merged but unreleased**
 > (`v0.1.0` shipped phase 4, `v0.2.0`
 > phase 5, `v0.3.0` phase 6, `v0.4.0` phase 7, `v0.5.0` phase 8, `v0.6.0` phase 9). Live E2E passes against real
 > Instagram and Facebook profiles, and both images publish to ghcr on tag. Note that Facebook
@@ -376,6 +381,53 @@ judged them but deliberately withheld `clean()`, and nothing spaced them at all.
 - [x] Eight CI gates green; 330 backend tests at **90.9%** coverage. The nine new config_builder
       cases were run against the pre-change source first and all nine failed, so they test the
       change rather than merely passing.
+
+### 12 · Surviving a reboot — ✅ DONE
+Prompted by a live incident: after a host reboot the web app answered only *Internal Server Error*
+for 9 hours. The reported symptom was "the app cannot access storage" — but storage was never at
+fault. `/mnt/downloads/gallery` was mounted, `777`, and both readable and writable by UID 1001 the
+whole time. The backend container simply never started.
+- [x] **Root cause is a boot-order race, not a storage fault.** The NAS is a
+      `nofail,x-systemd.automount` fstab entry. TrueNAS took **8 m 35 s** to serve NFS after the
+      cold boot; Docker's restore pass ran at **+21 s**. `mkdir` on an untriggered autofs
+      mountpoint returns `ENODEV`, so the start failed outright with
+      `error while creating mount source path …: no such device`. Docker retried four times over
+      ~6 min and gave up **2 m 11 s** before the mount landed.
+- [x] **`restart: unless-stopped` cannot cover this, and `RestartCount=0` is the proof, not a
+      contradiction.** The container never reached a running state, so there was no exit for the
+      policy to count. Anything relying on the restart policy here is relying on nothing.
+- [x] **It is host-wide: five services, four projects, one cause.** The NVR lost 9 h of recording,
+      two capture engines lost 1 h 34 m, and the monitoring container that would have reported it
+      binds the same share and was down too. `m3u8-api` survived on the same share only because its
+      last retry landed **0.14 s** after the mount succeeded — recovery was a coin flip.
+- [x] `docker-nas-mount-reconcile` — a host oneshot ordered **after** `docker.service` that waits
+      for every `x-systemd.automount` path in `/etc/fstab`, then `docker start`s any container whose
+      `.State.Error` names a mount failure. Three design points are load-bearing:
+      **(a)** ordering it after Docker keeps the standing rule that a NAS outage must never wedge
+      boot or block `docker compose up` — a `RequiresMountsFor=` on `docker.service` would have
+      broken it and made every unrelated container wait on the NAS;
+      **(b)** it uses `docker start`, never `docker compose up -d`, which re-resolves config files
+      and on the sibling quant stacks would omit a private overlay and return capture engines
+      read-only while still reporting healthy;
+      **(c)** the non-empty `.State.Error` test is what stops it resurrecting anything the operator
+      stopped on purpose — a deliberate stop leaves that field empty.
+- [x] **`is_mounted()` must test the filesystem *type*, and the obvious test is wrong.**
+      `mountpoint -q` returns true for an armed-but-unmounted autofs path, because autofs is itself
+      a mount; `stat -f -c %T` reports `nfs` for both. Verified against `/mnt/quant-artifacts`
+      (armed, unmounted) vs `/mnt/downloads` (mounted): only `findmnt -o FSTYPE` separates `autofs`
+      from `nfs4`. A mountpoint test would have reported success for the exact state the script
+      exists to wait out.
+- [x] **The proxy no longer turns a dead backend into a bare 500.** An uncaught `ECONNREFUSED`
+      escapes the route handler and Next answers with a *plain-text* 500 body reading
+      `Internal Server Error`; `lib/api.ts:asJson` falls back to `res.statusText` when the body will
+      not parse, so that string was the message in all six `alert alert-error` panels. The proxy now
+      returns `Response.json({ detail }, { status: 502 })` — `asJson` already **prefers** `detail`,
+      so every existing error surface improved with **no component change**.
+- [x] Verified by sabotage, not by inspection: a deliberately-stopped container with a NAS bind is
+      correctly skipped; a container whose start failed on a mount error is detected, waited out and
+      started (full negative→positive cycle); and the proxy was driven against a genuinely dead
+      upstream, returning `502` + `{"detail": …}` with the frontend's own `/api/health` still `200`.
+- [x] Frontend lint + typecheck + build green.
 
 ### D1 · Operator cookies — ✅ DONE
 - **Primary (new): browser extension** — load `extension/` unpacked, set the server URL, click
