@@ -23,7 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.0.1 # no floating @v10 tag is published
+        uses: astral-sh/setup-uv@v10.1.0 # no floating @v10 tag is published
         with:
           enable-cache: true
           cache-dependency-glob: backend/uv.lock
