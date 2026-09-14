@@ -25,7 +25,7 @@ jobs:
         working-directory: backend
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.0.1 # no floating @v10 tag is published
+      - uses: astral-sh/setup-uv@v10.1.0 # no floating @v10 tag is published
         with:
           enable-cache: true
           cache-dependency-glob: backend/uv.lock
@@ -45,7 +45,7 @@ jobs:
         working-directory: backend
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.0.1 # no floating @v10 tag is published
+      - uses: astral-sh/setup-uv@v10.1.0 # no floating @v10 tag is published
         with:
           enable-cache: true
           cache-dependency-glob: backend/uv.lock
