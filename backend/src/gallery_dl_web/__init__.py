@@ -1,3 +1,3 @@
 """gallery-dl-web — FastAPI backend wrapping the gallery-dl engine."""
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
