@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from gallery_dl_web.gallerydl.errors import detect_login_wall, detect_rate_limit
+from gallery_dl_web.gallerydl.errors import (
+    EMPTY_PROFILE_MARKER,
+    detect_empty_profile,
+    detect_login_wall,
+    detect_rate_limit,
+)
 
 # The shape of a real gallery-dl run (a Facebook profile blocked after 104 images), with every
 # identifier replaced by a placeholder. This repo is public: never commit a real username, profile
@@ -211,3 +216,100 @@ def test_a_login_redirect_is_also_a_rate_limit_not_a_cookie_problem() -> None:
     send the operator to Settings to re-export cookies that are perfectly good.
     """
     assert detect_rate_limit(["AbortExtraction: HTTP redirect to login page (…)"]) is not None
+
+
+# --------------------------------------------------------------- unreadable profiles
+
+# The shape of the real run that prompted this rule, with the username replaced. Facebook answered
+# HTTP 200 with a content-free shell carrying none of the markers gallery-dl parses, the retry loop
+# gave up, `_extract_profile_page` returned a bare `{}`, and `FacebookPhotosExtractor.items`
+# subscripted `["set_id"]` on it. Note the last line: the avatar produced nothing WITHOUT making a
+# request, because `Extractor.cache` had memoized that same `{}` under a key that ignores which URL
+# was asked for.
+FB_EMPTY_PROFILE = [
+    "debug:facebook:Using FacebookPhotosExtractor for "
+    "'https://www.facebook.com/example.invalid/photos'",
+    'debug:urllib3.connectionpool:https://www.facebook.com:443 "GET /example.invalid/photos_by '
+    'HTTP/1.1" 200 None',
+    "debug:facebook:Failed to extract user data: ",
+    "debug:facebook:Got empty profile photos page, retrying...",
+    "debug:facebook:Sleeping 1.01 seconds (request)",
+    'debug:urllib3.connectionpool:https://www.facebook.com:443 "GET /example.invalid/photos_by '
+    'HTTP/1.1" 200 None',
+    "debug:facebook:Failed to extract user data: ",
+    "debug:facebook:Got empty profile photos page, retrying...",
+    "error:facebook:An unexpected error occurred: KeyError - 'set_id'. Please run gallery-dl "
+    "again with the --verbose flag, copy its output and report this issue on "
+    "https://codeberg.org/mikf/gallery-dl/issues .",
+    "Traceback (most recent call last):",
+    '  File "/opt/venv/lib/python3.12/site-packages/gallery_dl/extractor/facebook.py", '
+    "line 591, in items",
+    "    set_id = self.cache(",
+    "KeyError: 'set_id'",
+    "info:facebook:No results for https://www.facebook.com/example.invalid/avatar",
+]
+
+# What the same run produces once `upstream_patches.install()` has run: one ERROR line, no
+# traceback, no invitation to file a gallery-dl bug.
+FB_EMPTY_PROFILE_PATCHED = [
+    "debug:facebook:Got empty profile photos page, retrying...",
+    f"error:facebook:AuthRequired: authenticated cookies needed to access this profile "
+    f"('{EMPTY_PROFILE_MARKER}')",
+]
+
+
+def test_detects_the_observed_empty_profile_crash() -> None:
+    """Before this rule the operator got gallery-dl's "report this issue on codeberg" text."""
+    assert detect_empty_profile(FB_EMPTY_PROFILE) is True
+
+
+def test_detects_the_patched_form_too() -> None:
+    """The anti-drift half: `upstream_patches` raises EMPTY_PROFILE_MARKER, this matches it."""
+    assert detect_empty_profile(FB_EMPTY_PROFILE_PATCHED) is True
+
+
+def test_each_marker_matches_on_its_own() -> None:
+    """One of the three is a DEBUG line that only reaches stderr by accident; the other two are
+    ERROR-level and are what the rule actually rests on."""
+    for line in (
+        "debug:facebook:Got empty profile photos page, retrying...",
+        "error:facebook:An unexpected error occurred: KeyError - 'set_id'. Please run gallery-dl",
+        f"error:facebook:AuthRequired: authenticated cookies needed ('{EMPTY_PROFILE_MARKER}')",
+    ):
+        assert detect_empty_profile([line]) is True, line
+
+
+def test_the_unpatched_crash_is_invisible_to_the_other_classifiers() -> None:
+    """Why this detector had to exist at all.
+
+    Neither existing rule matches the raw KeyError, so the failure fell through to the raw stderr
+    tail — `reason: error` plus a Python traceback, which reads like an application bug.
+    """
+    assert detect_login_wall(FB_EMPTY_PROFILE) is False
+    assert detect_login_wall(FB_EMPTY_PROFILE, anonymous=True) is False
+    assert detect_rate_limit(FB_EMPTY_PROFILE) is None
+
+
+def test_the_patched_form_is_also_caught_by_the_generic_login_wall() -> None:
+    """Belt and braces: even if `detect_empty_profile` were removed, the reason stays right.
+
+    That is the whole reason the patch reuses gallery-dl's own AuthRequired wording rather than
+    inventing an exception of its own.
+    """
+    assert detect_login_wall(FB_EMPTY_PROFILE_PATCHED) is True
+
+
+def test_empty_profile_does_not_match_ordinary_failures() -> None:
+    for line in (
+        "error:facebook:HttpError: '404 Not Found'",
+        "PermissionError: [Errno 13] Permission denied: '/mnt/downloads/gallery'",
+        # A near miss: a *different* KeyError must not be read as this one.
+        "error:instagram:An unexpected error occurred: KeyError - 'items'.",
+        # ...and so must a file whose name happens to contain the marker word.
+        "debug:facebook:Downloading set_id 12345",
+    ):
+        assert detect_empty_profile([line]) is False, line
+
+
+def test_empty_profile_empty_input() -> None:
+    assert detect_empty_profile([]) is False

@@ -83,6 +83,18 @@ Both sides must honor it; the TS mirror lives in `frontend/src/lib/events.ts`.
     genuinely deleted account with one. A **rate limit is classified first** — Facebook's block page
     carries login-ish wording, and there the correct advice is to wait, not to re-export cookies.
     `JobSummary.anonymous` reports which mode a job actually ran in.
+
+    One shape gets its own message under the same reason: **Facebook's content-free profile
+    shell**. It answers HTTP 200 with none of the markers gallery-dl parses, which upstream turns
+    into `KeyError: 'set_id'` plus an invitation to file a gallery-dl bug.
+    `gallerydl/upstream_patches.py` converts it to gallery-dl's own `AuthRequired`, and
+    `errors.py:detect_empty_profile` classifies it — checked *after* the rate limit and *before*
+    the generic wall, because its text matches both and only it names the other possibility: a
+    profile that no longer exists is served the identical page, so the two cannot be told apart.
+    That message deliberately carries no "un-tick anonymous" advice, since the same text is shown
+    to a cookied run that was refused; the frontend adds that line from `JobSummary.anonymous`.
+    The detector matches the crash text as well as the patched wording, so the reason survives the
+    patch failing to install.
 12. **Pacing is adaptive by default, and `pacing` reports it.** Both platforms are rate-limited,
     but Facebook fetches one full HTML page *per photo* where Instagram gets ~30 posts per JSON
     request, so a fixed delay large enough to be safe on a long Facebook run makes every short one
@@ -153,10 +165,17 @@ Both sides must honor it; the TS mirror lives in `frontend/src/lib/events.ts`.
 | ---------- | -------------- | --------------------------------------------------- |
 | `0`        | success        | `completed`                                         |
 | `1`        | error          | `failed` reason `error`                             |
+| `16`       | auth required  | `failed` reason `login-required`                    |
 | `4`        | download failed | `failed` reason `dl-failed` (some files may exist) |
 | `8`        | all skipped    | `completed` reason `all-skipped`                    |
 | `64`       | no extractor   | `failed` reason `no-extractor` (unsupported URL)    |
 | `128`      | OS error       | `failed` reason `os-error`                          |
+
+The ladder is `64 > 128 > 16 > 4 > 1 > 8`, and **16 above 4 is deliberate**: `Extractor.status`
+accumulates `4` from any fatal `HttpError`/`NotFoundError` earlier in the run and `Job.run`'s
+`finally` ORs it in, so `4 | 16` is the ordinary shape of an auth failure and a lower placement
+would almost never fire. The mapping is a backstop — when the stderr tail survives,
+`_annotate_failure` reaches the same reason from the message text.
 
 A worker process exit code of `2` (vs gallery-dl status) means the **worker itself** crashed before
 producing a terminal event; the backend synthesizes a `failed`/`worker-crash` event.

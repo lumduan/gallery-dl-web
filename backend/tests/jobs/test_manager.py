@@ -236,6 +236,61 @@ def test_annotate_classifies_the_real_anonymous_ig_lookup_failure() -> None:
     assert "Traceback" not in event["message"]
 
 
+def test_annotate_classifies_the_unreadable_facebook_profile() -> None:
+    """Regression for the reported crash: `reason: error` + "report this issue on codeberg".
+
+    The operator-facing message must name the wrong-URL possibility too — logged out, Facebook
+    serves a deleted profile and a walled one the same page.
+    """
+    from collections import deque
+
+    from tests.gallerydl.test_errors import FB_EMPTY_PROFILE
+
+    event: dict = {"type": "failed", "reason": "error"}
+    mgr_mod._annotate_failure(event, deque(FB_EMPTY_PROFILE), True)
+    assert event["reason"] == "login-required"
+    assert "Traceback" not in event["message"]
+    assert "codeberg" not in event["message"]
+    assert "no longer exists" in event["message"]
+    assert "Settings" in event["message"]
+
+
+def test_the_unreadable_profile_message_does_not_assume_anonymous() -> None:
+    """The same text is shown to a run that HAD cookies and was refused anyway.
+
+    Telling that operator to "un-tick anonymous" would be nonsense; the frontend adds that line
+    itself from `JobSummary.anonymous`, only when it applies.
+    """
+    from collections import deque
+
+    from tests.gallerydl.test_errors import FB_EMPTY_PROFILE
+
+    event: dict = {"type": "failed", "reason": "error"}
+    mgr_mod._annotate_failure(event, deque(FB_EMPTY_PROFILE), False)
+    assert event["reason"] == "login-required"
+    assert "anonymous" not in event["message"].lower()
+
+
+def test_rate_limit_still_beats_the_unreadable_profile_rule() -> None:
+    """A block page can carry both shapes; "wait it out" stays the correct advice."""
+    from collections import deque
+
+    from tests.gallerydl.test_errors import FB_EMPTY_PROFILE
+
+    event: dict = {"type": "failed", "reason": "error"}
+    mgr_mod._annotate_failure(
+        event,
+        deque(
+            [
+                "AbortExtraction: You've been temporarily blocked from viewing images.",
+                *FB_EMPTY_PROFILE,
+            ]
+        ),
+        True,
+    )
+    assert event["reason"] == "rate-limited"
+
+
 def test_annotate_leaves_a_cookied_lookup_failure_alone() -> None:
     """Same stderr, but the job had cookies — it may genuinely be a deleted account."""
     from collections import deque

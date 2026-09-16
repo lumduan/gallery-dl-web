@@ -86,7 +86,10 @@ export interface JobEvent {
    * On `failed`: `stalled` | `no-progress` | `rate-limited` | `login-required` | `worker-crash` |
    * `downloads-dir-unwritable` | a gallery-dl reason such as `dl-failed`.
    * `login-required` is what an anonymous (cookie-free) run hits on private or session-walled
-   * content — the operator's action is to add cookies in Settings.
+   * content — the operator's action is to add cookies in Settings. It also arrives straight from
+   * gallery-dl exit bit 16, and covers Facebook's content-free profile shell, where "the profile
+   * no longer exists" is served identically and cannot be told apart. Render `message` rather
+   * than hardcoding copy: several distinct failures share this reason and their advice differs.
    */
   reason?: string;
   /** failed/rate-limited only: a URL the platform gave to resume from (gallery-dl's &setextract). */

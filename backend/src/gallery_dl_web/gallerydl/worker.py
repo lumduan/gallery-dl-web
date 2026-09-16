@@ -35,7 +35,7 @@ from typing import IO, Any
 # Module-level references so tests can monkeypatch (e.g. ``gallery_dl.job.DownloadJob``).
 from gallery_dl import config, job, output
 
-from gallery_dl_web.gallerydl import config_builder, events, pacing
+from gallery_dl_web.gallerydl import config_builder, events, pacing, upstream_patches
 
 logger = logging.getLogger("gallery_dl_web.worker")
 
@@ -220,6 +220,21 @@ def _install_pacing(payload: dict[str, Any]) -> Callable[[], None] | None:
     return stop
 
 
+def _install_upstream_patches() -> Callable[[], None] | None:
+    """Fix up known gallery-dl defects before the job runs. Never fatal.
+
+    Same posture as ``_install_pacing``: a failure in here degrades to unpatched gallery-dl rather
+    than costing the job. Safe because every patch has an independent stderr sensor on the
+    manager's side — an unreadable Facebook profile is still reported as ``login-required`` by
+    ``errors.py:detect_empty_profile`` if this silently did nothing.
+    """
+    try:
+        return upstream_patches.install()
+    except Exception:
+        logger.exception("upstream gallery-dl patches could not be installed; continuing unpatched")
+        return None
+
+
 def _install_sigterm_flush() -> Callable[[], None]:
     """Emit the telemetry before the manager's SIGTERM kills us. Returns a restore callable.
 
@@ -310,8 +325,10 @@ def run(payload: dict[str, Any]) -> int:
 
     heartbeat: threading.Event | None = None
     stop_pacing: Callable[[], None] | None = None
+    stop_patches: Callable[[], None] | None = None
     restore_sigterm: Callable[[], None] | None = None
     try:
+        stop_patches = _install_upstream_patches()
         config_builder.apply(payload, config)
         # After config_builder (whose `sleep-request` is the seed and the fallback) and before
         # DownloadJob, because Job.run() -> _init() -> extractor.initialize() builds the session
@@ -362,6 +379,8 @@ def run(payload: dict[str, Any]) -> int:
         # gallery-dl's Extractor is class-level state and leaving it patched leaks across them.
         if stop_pacing is not None:
             stop_pacing()
+        if stop_patches is not None:
+            stop_patches()
         if restore_sigterm is not None:
             restore_sigterm()
         global _PACER

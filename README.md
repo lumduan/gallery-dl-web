@@ -42,15 +42,26 @@ What anonymous mode does *not* reach:
 
 - private, restricted, or otherwise login-walled content — that fails with a clear
   `login-required` message pointing back here, not a traceback;
+- **on Facebook, any profile whose owner limits it to logged-in viewers.** Facebook answers those
+  with a normal-looking HTTP 200 carrying no profile data at all, and serves a profile that no
+  longer exists the *identical* page — so the failure message names both possibilities rather than
+  guessing. Re-running with cookies is the quickest way to tell them apart;
 - on Instagram, `stories` / `highlights` / `saved` / `collection`, which are dropped from `include`
   automatically (logged-out they abort the whole extraction rather than just coming back empty).
   Anonymous Instagram jobs also switch to gallery-dl's `graphql` API, since its default REST
   endpoints reject logged-out requests.
 
-> ⚠️ **In practice, treat anonymous mode as a Facebook capability.** Verified 2026-08-16: a public
-> Facebook page downloads fine with no cookies, while Instagram answered the logged-out request with
-> `401 Unauthorized`. The job reports that clearly (`login-required`, with a link back to Settings)
-> rather than dumping a traceback — but for Instagram, cookies remain the practical answer.
+> ⚠️ **In practice, treat anonymous mode as a Facebook capability — and as a per-profile one.**
+> Verified 2026-08-16: a public Facebook page downloads fine with no cookies, while Instagram
+> answered the logged-out request with `401 Unauthorized`. The job reports that clearly
+> (`login-required`, with a link back to Settings) rather than dumping a traceback — but for
+> Instagram, cookies remain the practical answer.
+>
+> Re-verified 2026-09-16, and worth knowing before you reach for the checkbox: on Facebook this is
+> a property of the **target**, not of the platform. Pages and many personal profiles still render
+> to a logged-out client, but one that is restricted to logged-in viewers returns a content-free
+> page with no error of any kind. If an anonymous Facebook job comes back with nothing, re-run it
+> with cookies before assuming the URL is wrong.
 
 Note that logged-out requests are rate-limited by **IP** rather than by account, so the
 [pacing](#rate-limits-speed-and-long-running-jobs) below still matters — arguably more, since a

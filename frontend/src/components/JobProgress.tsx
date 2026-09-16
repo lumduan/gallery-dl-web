@@ -277,14 +277,28 @@ export function JobProgress({ jobId }: { jobId: string }) {
               {finalReason.reason === "login-required" ? (
                 <>
                   <span className="font-semibold">This content needs a logged-in session.</span>
+                  {/* Render the backend's message rather than hardcoding prose: several different
+                      failures promote to this one reason and their advice differs. An unreadable
+                      Facebook profile, for one, is served the same page as a profile that no
+                      longer exists, so its message has to mention the URL as well as cookies. */}
                   <span>
-                    The profile is private or restricted, or the platform refused anonymous
-                    access.{" "}
-                    <a className="link" href="/settings">
-                      Add cookies in Settings
-                    </a>{" "}
-                    and run it again — files already downloaded are skipped.
+                    {String(
+                      finalReason.message ??
+                        "The profile is private or restricted, or the platform refused anonymous access. Files already downloaded are skipped.",
+                    )}
                   </span>
+                  <span>
+                    <a className="link" href="/settings">
+                      Open Settings
+                    </a>{" "}
+                    to add or refresh cookies for this platform.
+                  </span>
+                  {summary?.anonymous && (
+                    <span className="opacity-80">
+                      This run was anonymous, so any cookies you have stored were not used — re-run
+                      it with anonymous mode turned off.
+                    </span>
+                  )}
                 </>
               ) : finalReason.reason === "rate-limited" ? (
                 <>

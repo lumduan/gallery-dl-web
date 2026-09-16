@@ -24,7 +24,12 @@ def test_emit_writes_one_json_line(capsys: pytest.CaptureFixture[str]) -> None:
         (8, ("completed", "all-skipped")),
         (68, ("failed", "no-extractor")),  # 64 | 4
         (9, ("failed", "error")),  # 8 | 1
-        (16, ("failed", "unknown-16")),  # no recognized bits set
+        (16, ("failed", "login-required")),  # AuthRequired & friends carry code 16
+        # 16 has to outrank 4: `Extractor.status` picks up 4 from any fatal HttpError earlier in
+        # the run and `Job.run`'s finally ORs it in, so this combination is the ordinary one.
+        (20, ("failed", "login-required")),  # 16 | 4
+        (144, ("failed", "os-error")),  # 128 | 16 — a broken disk still dominates
+        (32, ("failed", "unknown-32")),  # no recognized bits set
     ],
 )
 def test_map_exit_status(status: int, expected: tuple[str, str]) -> None:

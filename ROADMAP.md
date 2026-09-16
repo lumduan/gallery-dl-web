@@ -23,6 +23,8 @@ flowchart TD
     P9 --> P10
     P4 --> P11["11 · The listing outage<br/>a blocking walk is a global outage<br/>DONE"]
     P4 --> P12["12 · Surviving a reboot<br/>NAS-backed stack + a legible 502<br/>DONE"]
+    P7 --> P13["13 · The unreadable profile<br/>an upstream crash becomes a diagnosis<br/>DONE"]
+    P9 --> P13
 
     classDef done     fill:#d4f4dd,stroke:#2d8a4e,color:#1a5c33
     classDef active   fill:#fff3cd,stroke:#cc9a06,color:#7a5c04
@@ -32,6 +34,7 @@ flowchart TD
     class P10 done
     class P11 done
     class P12 done
+    class P13 done
     class P1 done
     class P2 done
     class P3 done
@@ -57,6 +60,7 @@ flowchart TD
 | **10 · Per-image pacing** | ✅ DONE | Everything phases 8-9 built paces the **API requests** that list posts; nothing paced the **image downloads** those requests release, and on Instagram they outnumber API requests ~30:1. Measured across three real runs the median gap between consecutive files was **0.8-2.7 s** while the API calls sat 20 s apart — a sub-second burst is what a rate limiter reacts to, and the run *mean* (1.8-6.8 s across the same three) only reflects how many page boundaries were hit. New **seconds per image** control on the same three surfaces, reaching gallery-dl's own `sleep` as a ±15% band. Defaults IG **2 s**, FB **0** (it already pays the request delay once per photo). Works in `fixed` mode too, where no pacer is installed at all, and costs nothing on skips | — |
 | **11 · The listing outage** | ✅ DONE | `GET /api/files` ran `os.walk` inline in its `async def`. On a NAS-backed install that is not a slow endpoint but a **global outage** — the event loop serves nothing while it walks, `/health` included, so Docker marked the backend unhealthy and every request stalled. Found live 2026-09-05 at **427,009 files over NFS** with the main thread in uninterruptible disk sleep. Now `files/index.py`: `to_thread` + a **single-flight lock** (moving off the loop removes the accidental serialisation, so five reloads would otherwise be five concurrent walks) + a 30 s TTL, and the response is paged with a real `total`. The zip route threads its walk and deflate too. Both properties verified by sabotage; two earlier, plausible-looking tests passed with the offload deleted | — |
 | **12 · Surviving a reboot** | ✅ DONE | The backend was down **9 hours** after a host reboot and the UI said only *Internal Server Error*. Storage was never at fault. On an autofs/NFS path Docker's restore pass runs seconds after boot, `mkdir` on the untriggered mountpoint returns **ENODEV**, and the container never starts — so `unless-stopped` cannot help, because there is no exit to count (`RestartCount` 0). Host-wide: **five services, four projects, one cause**; the NVR lost 9 h and two capture engines 1 h 34 m. A sibling on the same share survived by **0.14 s**. Fixed at the host with a mount reconciler ordered *after* `docker.service` (making Docker wait on the NAS would hold every unrelated container hostage), and in-app by having the proxy return `502 {detail}` instead of letting `ECONNREFUSED` become a bare 500 — `asJson` already prefers `detail`, so all six error panels improved with no component change | — |
+| **13 · The unreadable profile** | ✅ DONE | A Facebook profile job died with `KeyError: 'set_id'` and an invitation to **file a gallery-dl bug**, reported as `reason: error`. Facebook answers **HTTP 200 with a ~326 KB content-free shell** for a profile it will not show a logged-out visitor; gallery-dl retries, returns a bare `{}`, and subscripts `["set_id"]` on it — **identical in 1.32.9 and the newest 1.32.12**, so there was nothing to upgrade to. Now `upstream_patches.py` raises gallery-dl's own `AuthRequired` instead, which also stops the memoized `{}` poisoning the avatar child, and `errors.py` classifies it with a message that owns the ambiguity — logged out, a **deleted** profile is served the identical page. Exit bit **16** is mapped (above 4, which accumulates). Five CI gates green (**90.9%** coverage); **live-verified 2026-09-16** — anonymous now fails `login-required` / `exit 16` with no traceback, and the **same URL with cookies downloaded 131+ files**, proving the advice correct | — |
 | **D1 · Operator cookies** | ✅ DONE | Real IG `sessionid` + FB cookies in use; live downloads confirmed 2026-07-23 | — |
 
 > **All phases are complete; the last release is `v0.6.0` and phases 10-12 are merged but unreleased**
@@ -428,6 +432,58 @@ whole time. The backend container simply never started.
       started (full negative→positive cycle); and the proxy was driven against a genuinely dead
       upstream, returning `502` + `{"detail": …}` with the frontend's own `/api/health` still `200`.
 - [x] Frontend lint + typecheck + build green.
+
+### 13 · The unreadable profile — ✅ DONE
+Prompted by a live report: a Facebook profile job ended with
+`An unexpected error occurred: KeyError - 'set_id'. Please … report this issue on codeberg`, shown
+to the operator in a red panel. The job record read `reason: "error"`, `exit_status: 1`,
+`downloaded: 0` — completely unclassified, which is the exact "bare reason plus a Python traceback
+that reads like an application bug" that `errors.py` exists to prevent.
+- [x] **Root cause is upstream, and there is nothing to upgrade to.**
+      `FacebookExtractor._extract_profile_page` injects `set_id` only on its success branch, so
+      both failure exits `return {}`, and `FacebookPhotosExtractor.items` immediately subscripts
+      `["set_id"]`. Verified **byte-identical in 1.32.9 (pinned) and 1.32.12 (newest on PyPI)**.
+- [x] **Probed Facebook directly rather than guessing** (logged-out, gallery-dl's own headers):
+      `/facebook/photos_by` (a Page) **666 KB with every marker**, `/zuck/photos_by` (a personal
+      profile) **664 KB with every marker**, the reported profile **326 KB with none**. So this is
+      per-profile, not a global anonymous wall — the standing note that cookie-free Facebook works
+      is still true, just not universally.
+- [x] **A nonexistent username returns the same 200 and the same 326 KB shell, with no
+      `>Page Not Found</title>`** — so gallery-dl's Page-Not-Found branch is effectively dead and
+      "walled" vs "gone" genuinely **cannot be told apart**. That killed the idea of
+      re-implementing the function to separate them, and it is why both the exception text and the
+      operator message state the *observation*, never a conclusion.
+- [x] **A body signature was ruled out, not skipped.** `telemetry.capture_body` returns only a
+      prefix, so a predicate cannot soundly test for the *absence* of a marker — and the banked
+      telemetry from the failing run proves it: both responses classified `clean`, `rule: null`.
+- [x] `gallerydl/upstream_patches.py` raises `AuthRequired` in the exact shape `facebook.py:363`
+      already uses for the sibling failure, so `errors.py` catches it with **no new pattern** and
+      `job.py` logs one clean line. It **deliberately does not** do what upstream meant: the
+      unreachable `if not set_id: return iter(())` would make a total failure `status 0` /
+      `reason "ok"` / zero files — a silent success, worse than the crash.
+- [x] **It un-poisons the avatar as a side effect.** `Extractor.cache` keys on the profile name
+      alone — the `set_id=True/False` argument is not in the key and `_exp=0` is forever — so the
+      `{}` from `/photos_by` was handed to `FacebookAvatarExtractor`, which is why the failing run
+      logged the avatar finding "No results" *with no request of its own*. Confirmed by direct
+      observation: unpatched memoizes the `{}`, patched does not.
+- [x] **Exit bit 16 mapped, and placed above bit 4.** `Extractor.status` accumulates 4 from any
+      fatal `HttpError`/`NotFoundError` and `Job.run`'s `finally` ORs it in, so `4 | 16` is the
+      ordinary shape and a lower placement would almost never fire.
+- [x] **Two independent sensors, as the house rule requires.** `detect_empty_profile` matches the
+      patched wording *and* the raw `KeyError - 'set_id'`, so the reason survives the patch failing
+      to install. Of its three markers only one is a DEBUG line — the other two are ERROR-level, so
+      it does not rest on the accidental log leak the urllib3 401 rule leans on.
+- [x] `test_upstream_pins.py` gains the pin that tells us when to **delete** the patch, plus the
+      shape check that stops a moved seam being wrapped blindly. `_pristine_extractor` now guards
+      the new class attribute too.
+- [x] The frontend renders `finalReason.message` instead of hardcoded prose (several failures share
+      `login-required` and their advice differs), and adds the "this run was anonymous" line from
+      `JobSummary.anonymous` — so the backend message never has to assume which mode ran.
+- [x] Five CI gates green, **90.9%** coverage, 364 tests.
+- [x] **Live-verified 2026-09-16** on the reported URL: anonymous → `reason: login-required`,
+      `exit_status: 16`, no traceback and no codeberg link; **the same URL with the stored cookies
+      downloaded 131+ files**, which proves the message's primary advice is the correct one; and a
+      Page still walks and downloads anonymously, so the patch broke nothing readable.
 
 ### D1 · Operator cookies — ✅ DONE
 - **Primary (new): browser extension** — load `extension/` unpacked, set the server URL, click
