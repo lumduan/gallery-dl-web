@@ -29,7 +29,9 @@ from typing import Any
 from gallery_dl_web.config import Settings, merge_pacing, normalize_pacing
 from gallery_dl_web.cookies.store import CookieStore
 from gallery_dl_web.gallerydl.errors import (
+    EMPTY_PROFILE_MESSAGE,
     LOGIN_WALL_MESSAGE,
+    detect_empty_profile,
     detect_login_wall,
     detect_rate_limit,
 )
@@ -91,7 +93,9 @@ def _annotate_failure(
     denied, 404) shows up.
 
     Order matters: a rate limit is checked FIRST because Facebook's block page is also served with
-    login-ish wording, and "wait it out" is the correct advice there — "add cookies" is not.
+    login-ish wording, and "wait it out" is the correct advice there — "add cookies" is not. The
+    unreadable-profile case is checked before the generic wall for the mirror-image reason: its
+    text matches both, and only its message names the wrong-URL possibility.
     """
     limit = detect_rate_limit(stderr_tail)
     if limit is not None:
@@ -99,6 +103,12 @@ def _annotate_failure(
         event["message"] = limit.message
         if limit.resume_url:
             event["resume_url"] = limit.resume_url
+        return
+    if detect_empty_profile(stderr_tail):
+        # Same reason as the generic wall — no new vocabulary for the frontend or the contract —
+        # but a message that also covers "the URL is wrong", which Facebook serves identically.
+        event["reason"] = "login-required"
+        event["message"] = EMPTY_PROFILE_MESSAGE
         return
     if detect_login_wall(stderr_tail, anonymous=anonymous):
         event["reason"] = "login-required"

@@ -101,10 +101,60 @@ _ANON_LOGIN_WALL_RE = re.compile(
     re.I,
 )
 
+# Facebook serves a profile it will not render to this session as an HTTP 200 carrying none of the
+# markers gallery-dl parses -- no `"pageItems"`, no `","user":{"`. OBSERVED 2026-09-16: an anonymous
+# job logged two `Got empty profile photos page, retrying...` debug lines and then died with
+# `KeyError - 'set_id'`, and the operator was shown gallery-dl's "report this issue on codeberg"
+# text in a red panel.
+#
+# `_extract_profile_page` exhausts its retries and returns a bare `{}`; `FacebookPhotosExtractor`
+# subscripts `["set_id"]` on it. `upstream_patches.install()` turns that into an `AuthRequired`
+# carrying EMPTY_PROFILE_MARKER -- imported from here by the raiser, so the reported reason and the
+# text that triggers it cannot drift apart. The first two alternatives are the patched path; the
+# `KeyError` one is the fallback for a run where the patch failed to install, which is the whole
+# reason this is a second, independent sensor.
+#
+# Two of the three are ERROR-level and one is not, which matters. `Got empty profile photos page`
+# is a `log.debug` call; it reaches stderr only because `output.initialize_logging` resets the root
+# logger to NOTSET *after* the worker's `basicConfig(level=WARNING)`, so that handler prints
+# gallery-dl's debug records too. That is the same accident the urllib3 401 rule leans on, and the
+# same reason it is not allowed to be the only match: `no profile data in the page` (via job.py's
+# `log.error` on the AuthRequired) and `KeyError - 'set_id'` (job.py's unexpected-error handler)
+# are both ERROR-level and survive anyone tightening the log levels.
+EMPTY_PROFILE_MARKER = "no profile data in the page"
+
+_EMPTY_PROFILE_RE = re.compile(
+    r"Got empty profile photos page"
+    rf"|{re.escape(EMPTY_PROFILE_MARKER)}"
+    r"|KeyError - 'set_id'",
+    re.I,
+)
+
 LOGIN_WALL_MESSAGE = (
     "This content needs a logged-in session. Either the profile is private or restricted, or the "
     "platform is refusing anonymous access to it. Add cookies for this platform in Settings and "
     "run it again; files already downloaded are skipped."
+)
+
+# Deliberately NOT LOGIN_WALL_MESSAGE. That one says "add cookies", which is only half the advice
+# here: a profile that no longer exists is served the SAME page as one that is merely walled (both
+# HTTP 200, both ~326 KB, and today's Facebook no longer emits the `>Page Not Found</title>` marker
+# gallery-dl looks for), so the two genuinely cannot be told apart from the outside. Saying so is
+# more useful than picking one and being wrong half the time.
+#
+# It states the OBSERVATION, never the conclusion, and that is load-bearing: if Facebook changes
+# its markup, gallery-dl's markers stop matching for EVERY profile, and a message that concluded
+# "your cookies are bad" would send every operator to re-export a perfectly good session instead of
+# reporting an upstream break. It also carries no "un-tick anonymous" advice, because the same text
+# is shown to a run that had cookies and was refused anyway — the frontend adds that line itself,
+# from `JobSummary.anonymous`, only when it applies.
+EMPTY_PROFILE_MESSAGE = (
+    "Facebook returned a page with none of the profile data gallery-dl reads. Logged out that is "
+    "what a private or restricted profile looks like — and also what a profile that no longer "
+    "exists looks like, because Facebook serves the same page for both, so the two cannot be told "
+    "apart from the outside. Check the URL still opens in a browser, and try it with a working "
+    "session: add or refresh this platform's cookies in Settings. Files already downloaded are "
+    "skipped."
 )
 
 
@@ -150,3 +200,13 @@ def detect_login_wall(stderr_lines: Iterable[str], *, anonymous: bool = False) -
     if any(_LOGIN_WALL_RE.search(line) for line in lines):
         return True
     return anonymous and any(_ANON_LOGIN_WALL_RE.search(line) for line in lines)
+
+
+def detect_empty_profile(stderr_lines: Iterable[str]) -> bool:
+    """True if Facebook served a profile page carrying none of the data gallery-dl parses.
+
+    Narrower than ``detect_login_wall``, and checked before it: the patched ``AuthRequired`` text
+    matches both, and this one's message is the accurate one -- it also names the wrong-URL case,
+    which "add cookies in Settings" on its own would send the operator right past.
+    """
+    return any(_EMPTY_PROFILE_RE.search(line) for line in stderr_lines)

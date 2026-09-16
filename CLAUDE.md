@@ -66,6 +66,7 @@ unrelated container on the host hostage.
 - `backend/src/gallery_dl_web/jobs/manager.py` — asyncio orchestrator (spawn/fan-out/replay/stall-retry/GC).
 - `backend/src/gallery_dl_web/gallerydl/config_builder.py` — pure payload→`config.set` translator.
 - `backend/src/gallery_dl_web/gallerydl/pacing.py` — the adaptive request pacer + its three patches.
+- `backend/src/gallery_dl_web/gallerydl/upstream_patches.py` — workarounds for gallery-dl bugs.
 - `backend/src/gallery_dl_web/pacing/store.py` — operator pacing overrides (`<data_dir>/pacing.json`).
 - `backend/src/gallery_dl_web/files/index.py` — the downloads listing, off the event loop.
 - `backend/src/gallery_dl_web/api/routes_jobs.py` — SSE endpoint + zip.
@@ -197,12 +198,50 @@ anonymous lookup path is walled: topsearch 401, and the logged-out profile page 
 `"profile_id"`), so that text counts as a login wall *only* when `anonymous` is set. With cookies it
 stays unmatched, since sending that operator to Settings would be wrong.
 
+**`gallerydl/upstream_patches.py` works around a gallery-dl bug, and it deliberately does NOT do
+what upstream meant.** `FacebookExtractor._extract_profile_page` injects `set_id` only on its
+success branch, so both failure exits return a bare `{}`, and `FacebookPhotosExtractor.items`
+immediately subscripts `["set_id"]` on it — `KeyError: 'set_id'`, reported to the operator as
+gallery-dl's "report this issue on codeberg". Identical in 1.32.9 and 1.32.12, so there is nothing
+to upgrade to. The line *after* the crash site is `if not set_id: return iter(())`, so upstream
+intended a silent empty result; restoring that would give a total failure `status 0` / `reason
+"ok"` / zero files — a **silent success**, which for a profile downloader is worse than the crash.
+We raise `AuthRequired` instead, in the exact shape `facebook.py:363` already uses for the sibling
+failure, so `errors.py` classifies it with no new pattern and `job.py` logs one clean line instead
+of a traceback. Don't "fix" it back.
+
+Raising is also what un-poisons the avatar: `Extractor.cache` keys on the profile name alone — the
+`set_id=True/False` argument is not part of the key, and `_exp=0` memoizes for the life of the
+process — so the `{}` from `/photos_by` was being handed to `FacebookAvatarExtractor`, which is why
+a failed run logged the avatar finding "No results" *with no request of its own*. Nothing is
+memoized when the call raises. It costs one extra pair of requests on a genuinely walled profile;
+that is the price of the avatar still working on one that is only partly walled.
+
+**Logged out, a walled Facebook profile and a nonexistent one are indistinguishable.** Probed live
+2026-09-16: both return HTTP 200 and the same ~326 KB content-free shell, and neither carries the
+`>Page Not Found</title>` marker gallery-dl looks for, so that branch is effectively dead. A Page
+(`/facebook`) and other personal profiles (`/zuck`) still render anonymously, so this is per-profile,
+not a global wall — the memory note that "cookie-free downloads work on FB" is still true, just not
+universally. Both the exception text and `EMPTY_PROFILE_MESSAGE` therefore state the **observation**
+("a page with none of the profile data gallery-dl reads"), never a conclusion: if Facebook changes
+its markup the markers stop matching for *every* profile, and a message concluding "your cookies are
+bad" would send every operator off to re-export a perfectly good session instead of reporting an
+upstream break.
+
+**Exit bit 16 must outrank bit 4 in `map_exit_status`.** `AuthRequired`/`AuthorizationError`/
+`AuthenticationError` all carry code 16, but `Extractor.status` independently accumulates 4 from any
+fatal `HttpError`/`NotFoundError` earlier in the run and `Job.run`'s `finally` ORs it in — so
+`4 | 16` is the ordinary shape of an auth failure, and 16 placed below 4 would almost never fire.
+
 **Tests must never spawn a real worker, never make a real request, and never leave gallery-dl
 patched.** `tests/conftest.py`'s autouse `_no_real_spawn` covers the manager; `tests/gallerydl/conftest.py`
 adds the worker-side siblings, because that code runs *in-process*: `_no_real_http` makes
 `HTTPAdapter.send` raise, and `_pristine_extractor` asserts after every test that `Extractor.request`,
-`_init_session` and the root log handlers were restored — `pacing.install` mutates class-level state
-that would otherwise pace and log every later test.
+`_init_session`, `FacebookExtractor._extract_profile_page` and the root log handlers were restored —
+`pacing.install` and `upstream_patches.install` both mutate class-level state that would otherwise
+pace, log and re-classify every later test. That fixture imports the Facebook extractor eagerly
+rather than probing `sys.modules`: a guard that only checks what happened to be imported is the kind
+of check that reports success because it checked nothing.
 
 On `_no_real_spawn` specifically: Before anonymous mode there was an accidental guard — a cookie-less job failed before
 reaching `spawn_worker` — so tests could create jobs without patching anything. That is gone by
