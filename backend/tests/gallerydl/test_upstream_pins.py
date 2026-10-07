@@ -78,9 +78,9 @@ def test_facebook_still_returns_an_unkeyed_dict_for_a_profile_it_cannot_read() -
 
     ``_extract_profile_page`` injects ``set_id`` only on its success branch, so both failure exits
     return a bare ``{}`` and ``FacebookPhotosExtractor.items`` raises ``KeyError: 'set_id'`` on it.
-    Present in 1.32.9 and still in 1.32.12, so there is nothing to upgrade to. **When this test
-    fails, upstream has fixed it — re-verify and delete the patch**, because a wrapper whose
-    premise is gone is worse than no wrapper.
+    Present in 1.32.9 and still in 1.32.12 and 1.32.15, so there is nothing to upgrade to. **When
+    this test fails, upstream has fixed it — re-verify and delete the patch**, because a wrapper
+    whose premise is gone is worse than no wrapper.
     """
     src = inspect.getsource(FacebookExtractor._extract_profile_page)
     assert "if set_id or user:" in src, "success branch not found — this pin is checking nothing"

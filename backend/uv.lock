@@ -508,14 +508,14 @@ wheels = [
 
 [[package]]
 name = "gallery-dl"
-version = "1.32.9"
+version = "1.32.15"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b1/60/5131cd00162b86dbf3f4528d348eba2f97bc22e2b452855b23c51d5fe340/gallery_dl-1.32.9.tar.gz", hash = "sha256:6847cf1b8fcb231b3a214965470ac64bfbe4f63e92f1d7dbda2d533c3930f07d", size = 735350, upload-time = "2026-08-01T09:47:04.677Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/15/c1/00bd1712cd24cd5ac5c0267596cce3e17fc580f057b344a68122355643ed/gallery_dl-1.32.15.tar.gz", hash = "sha256:a33192d265d8877d94fd37ac358d5e4ff6955b739b350c8a7077392d2ca4edd5", size = 759174, upload-time = "2026-10-03T15:46:44.611Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/4e/0b/766ddfd2035b6fb354b57fe4cdf620cd84f9eba3efe5701049a93602a7e4/gallery_dl-1.32.9-py3-none-any.whl", hash = "sha256:271d18fed61e0b9f006d4944be59341b9af136576382e237aa08ba6d060a0e9a", size = 914866, upload-time = "2026-08-01T09:47:00.771Z" },
+    { url = "https://files.pythonhosted.org/packages/2c/e9/5bac9bb4e3cf3883b0f8517059a5b9b5aba4f7d5263a7c926b970a1fc80e/gallery_dl-1.32.15-py3-none-any.whl", hash = "sha256:e8fc03eebddcd4ba816ae7a9c42548a68e7ae8a01e7c5a83d6f591e253f092a6", size = 941320, upload-time = "2026-10-03T15:46:40.802Z" },
 ]
 
 [[package]]
@@ -547,7 +547,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", extras = ["standard"], specifier = ">=0.115" },
-    { name = "gallery-dl", specifier = ">=1.28" },
+    { name = "gallery-dl", specifier = ">=1.32.12" },
     { name = "pillow", specifier = ">=10.0" },
     { name = "pydantic-settings", specifier = ">=2.5" },
     { name = "sse-starlette", specifier = ">=2.1" },

@@ -16,8 +16,9 @@ STATUS_ERROR = 1
 STATUS_DOWNLOAD_FAILED = 4
 STATUS_SKIPPED = 8
 # AuthenticationError / AuthorizationError / AuthRequired all carry code 16. Raised only from
-# genuine auth walls in the two extractors this app drives (facebook.py:260,363 and
-# instagram.py:1013), so it maps straight onto the reason the contract already has.
+# genuine auth walls in the two extractors this app drives (facebook.py:260,363; instagram.py's
+# only one, :931, sits in `reels_media_legacy`, which nothing calls since 1.32.12), so it maps
+# straight onto the reason the contract already has.
 STATUS_AUTH = 16
 STATUS_NO_EXTRACTOR = 64
 STATUS_OS_ERROR = 128

@@ -147,14 +147,15 @@ def test_returns_call_tree() -> None:
 # ----------------------------------------------------------------- anonymous (cookie-free) mode
 
 
-def test_anonymous_instagram_sends_no_cookies_and_switches_to_graphql() -> None:
-    """Logged-out, IG's REST /api/v1/* endpoints mostly 401; GraphQL is the path that answers."""
+def test_anonymous_instagram_sends_no_cookies() -> None:
     fake = FakeConfig()
     config_builder.apply(_ig(anonymous=True, cookies=None), fake)
     d = fake.as_dict()
     # None is falsy, so gallery-dl's `if cookies := self.config("cookies")` guard no-ops.
     assert d[(("extractor", "instagram"), "cookies")] is None
-    assert d[(("extractor", "instagram"), "api")] == "graphql"
+    # gallery-dl 1.32.12 removed the `api` option (one Polaris GraphQL client for everything), so
+    # the old anonymous `api: graphql` switch would be a key nothing reads.
+    assert (("extractor", "instagram"), "api") not in d
 
 
 def test_anonymous_instagram_strips_auth_only_include() -> None:
@@ -189,19 +190,11 @@ def test_anonymous_avatar_append_uses_the_filtered_include() -> None:
     assert fake.as_dict()[(("extractor", "instagram"), "include")] == "posts,avatar"
 
 
-def test_anonymous_instagram_explicit_api_option_wins() -> None:
-    fake = FakeConfig()
-    config_builder.apply(_ig(anonymous=True, cookies=None, options={"api": "rest"}), fake)
-    assert fake.as_dict()[(("extractor", "instagram"), "api")] == "rest"
-
-
-def test_cookied_instagram_gets_no_api_override() -> None:
-    """The tuning is anonymous-only: a cookied job keeps gallery-dl's own default API."""
+def test_cookied_instagram_include_is_not_filtered() -> None:
+    """The include filtering is anonymous-only: a cookied job keeps every category it asked for."""
     fake = FakeConfig()
     config_builder.apply(_ig(options={"include": "posts,stories"}), fake)
-    d = fake.as_dict()
-    assert (("extractor", "instagram"), "api") not in d
-    assert d[(("extractor", "instagram"), "include")] == "posts,stories"  # not filtered
+    assert fake.as_dict()[(("extractor", "instagram"), "include")] == "posts,stories"
 
 
 def test_anonymous_facebook_needs_no_cookies_and_no_tuning() -> None:
@@ -209,7 +202,6 @@ def test_anonymous_facebook_needs_no_cookies_and_no_tuning() -> None:
     config_builder.apply(_fb(anonymous=True, cookies=None), fake)
     d = fake.as_dict()
     assert d[(("extractor", "facebook"), "cookies")] is None
-    assert (("extractor", "facebook"), "api") not in d
     # Facebook's include is never filtered — its categories all work logged-out on public content.
     assert d[(("extractor", "facebook"), "include")] == "photos"
     # Pacing still applies: logged-out requests are rate-limited by IP instead of by account.

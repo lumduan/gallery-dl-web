@@ -48,8 +48,6 @@ What anonymous mode does *not* reach:
   guessing. Re-running with cookies is the quickest way to tell them apart;
 - on Instagram, `stories` / `highlights` / `saved` / `collection`, which are dropped from `include`
   automatically (logged-out they abort the whole extraction rather than just coming back empty).
-  Anonymous Instagram jobs also switch to gallery-dl's `graphql` API, since its default REST
-  endpoints reject logged-out requests.
 
 > ⚠️ **In practice, treat anonymous mode as a Facebook capability — and as a per-profile one.**
 > Verified 2026-08-16: a public Facebook page downloads fine with no cookies, while Instagram

@@ -16,7 +16,7 @@ Payload shape (received by the worker over stdin)::
                  "per_file": float | None} | None,
       "cookies": {"sessionid": "..."} (IG) | {name: value, ...} (FB) | None,
       "options": {"include", "videos", "sleep-request", "sleep", "directory", "filename", "archive",
-                  "api", "fallback-retries", "quick_update"},
+                  "fallback-retries", "quick_update"},
     }
 
 Note the option keys are gallery-dl's own, so they are HYPHENATED (`sleep-request`), not
@@ -98,9 +98,10 @@ _FB_PATH: ConfigPath = ("extractor", "facebook")
 _EXTRACTOR_PATH: ConfigPath = ("extractor",)
 
 # Instagram `include` categories that CANNOT work logged-out, and do not merely come back empty —
-# they abort the whole extraction. gallery-dl's GraphQL API maps reels_media / highlights_media /
-# guide / user_saved / user_collection to `_unsupported` (AbortExtraction), and the REST endpoints
-# behind them 401 without a session. Dropping them keeps an anonymous profile walk alive.
+# they abort the whole extraction. Dropping them keeps an anonymous profile walk alive. The reason
+# was measured on gallery-dl <= 1.32.11, whose `api: graphql` mode mapped these to `_unsupported`
+# (AbortExtraction) and whose REST endpoints 401'd without a session. 1.32.12 removed that option
+# and moved stories/highlights onto Polaris GraphQL; nobody has re-measured them logged-out since.
 _IG_AUTH_ONLY_INCLUDE = frozenset(
     {"stories", "highlights", "stories-tray", "saved", "collection", "followers", "following"}
 )
@@ -156,11 +157,6 @@ def apply(payload: dict[str, Any], config: ConfigLike) -> list[tuple[ConfigPath,
         elif key == "sleep":
             value = resolved_per_file
         _set(platform_path, key, value)
-
-    # Logged-out, Instagram's REST /api/v1/* endpoints mostly 401; the GraphQL query_hash path is
-    # the one that still answers. Facebook needs no equivalent. An explicit option wins.
-    if anonymous and platform == "instagram":
-        _set(_IG_PATH, "api", options.get("api", "graphql"))
 
     # Avatar: when requested (profile downloads), append 'avatar' to include (idempotent) so
     # gallery-dl also fetches the profile picture for the card.

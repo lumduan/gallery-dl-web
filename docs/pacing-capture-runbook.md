@@ -101,3 +101,9 @@ Answer three questions, then write the signature table against the answers:
 3. **Does the empty-page soft limit fire?** `instagram.py:1371-1377` raises
    `"<user>'s posts are private"` when `has_next_page` is true and `edges` is empty. If that appears
    in a run against a public profile, gallery-dl is misreporting a soft limit as a privacy setting.
+   ➡️ **SUPERSEDED by gallery-dl 1.32.12.** That check lived in the old `InstagramGraphqlAPI`,
+   which is gone. The Polaris replacement (`_pagination_graphql`, `instagram.py:1301` in 1.32.15)
+   raises nothing. It **breaks out silently** when a page will not parse as JSON or lacks its
+   field (`:1376`) and when `page_info` says there is no next page (`:1391`). So the question is
+   now different: does a soft limit end the walk early and get reported as a **completed** job?
+   Compare the file count against the profile's post count.
