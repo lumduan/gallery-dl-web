@@ -40,7 +40,7 @@ _RATE_LIMIT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     ),
     (
         # OBSERVED 2026-08-26. Instagram's throttle is a 302 to the bare home page, and gallery-dl
-        # turns it into this exact wording (instagram.py:186). Without this the operator got
+        # turns it into this exact wording (instagram.py:182). Without this the operator got
         # `reason: dl-failed` plus a raw traceback for what is simply a rate limit -- the run had
         # done 859 downloads in 885 s, and the only useful action is to wait.
         re.compile(r"HTTP redirect to (?:home|login|challenge) page", re.I),

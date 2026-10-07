@@ -64,6 +64,52 @@ async def test_stored_cookies_are_used_when_not_opting_out(
     assert seen[0]["cookies"] == {"sessionid": "SID"}
 
 
+async def test_instagram_profile_job_does_not_add_the_avatar(
+    job_manager, cookie_store, fake_spawn, capture_spawn
+) -> None:
+    # Instagram's avatar endpoint 429s on the first request; including it turned every fully
+    # downloaded profile into a ~4 min dead tail and a `failed: rate-limited` job.
+    cookie_store.update(ig_sessionid="SID")
+    seen = capture_spawn(
+        fake_spawn(
+            [json.dumps({"type": "completed", "exit_status": 0, "downloaded": 0, "skipped": 0})]
+        )
+    )
+    jid = await job_manager.create_job("https://www.instagram.com/someuser/", "instagram")
+    await job_manager.wait_for(jid)
+    assert "include_avatar" not in seen[0]["options"]
+    assert seen[0]["options"]["archive"].endswith("someuser.sqlite")  # it IS a profile job
+
+
+async def test_explicit_include_avatar_still_wins_on_instagram(
+    job_manager, cookie_store, fake_spawn, capture_spawn
+) -> None:
+    cookie_store.update(ig_sessionid="SID")
+    seen = capture_spawn(
+        fake_spawn(
+            [json.dumps({"type": "completed", "exit_status": 0, "downloaded": 0, "skipped": 0})]
+        )
+    )
+    jid = await job_manager.create_job(
+        "https://www.instagram.com/someuser/", "instagram", {"include_avatar": True}
+    )
+    await job_manager.wait_for(jid)
+    assert seen[0]["options"]["include_avatar"] is True
+
+
+async def test_facebook_profile_job_still_adds_the_avatar(
+    job_manager, fake_spawn, capture_spawn
+) -> None:
+    seen = capture_spawn(
+        fake_spawn(
+            [json.dumps({"type": "completed", "exit_status": 0, "downloaded": 0, "skipped": 0})]
+        )
+    )
+    jid = await job_manager.create_job("https://www.facebook.com/someuser", "facebook")
+    await job_manager.wait_for(jid)
+    assert seen[0]["options"]["include_avatar"] is True
+
+
 async def test_completed_flow_and_subscriber_fanout(
     job_manager, cookie_store, fake_spawn, monkeypatch
 ) -> None:

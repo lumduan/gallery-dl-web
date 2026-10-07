@@ -113,10 +113,10 @@ def _html_for_api(obs: Observation) -> bool:
 
 INSTAGRAM: tuple[Signature, ...] = (
     # OBSERVED 2026-08-26. The real block. gallery-dl raises AbortExtraction on it
-    # (instagram.py:186), so by the time we classify, the run is already over -- the value is in
+    # (instagram.py:182), so by the time we classify, the run is already over -- the value is in
     # reporting it as a rate limit rather than a traceback, and in never treating it as clean.
     Signature("ig-redirect-root", Tier.TERMINAL, _redirected_to_root),
-    # gallery-dl detects these two itself (instagram.py:178-181) and aborts. Not seen in the
+    # gallery-dl detects these two itself (instagram.py:172-175) and aborts. Not seen in the
     # capture, but they share the redirect mechanism above and cost nothing to carry.
     Signature(
         "ig-redirect-login",
@@ -148,8 +148,8 @@ INSTAGRAM: tuple[Signature, ...] = (
 
 # --- Facebook ------------------------------------------------------------------------------------
 
-# Byte-for-byte what facebook.py:261 matches before raising AbortExtraction. Verified still present
-# in gallery-dl 1.32.9.
+# Byte-for-byte what facebook.py:264 matches before raising AbortExtraction. Verified still present
+# in gallery-dl 1.32.15.
 _FB_BLOCK_MARKERS = ('{"__dr":"cometerrorroot.react"}', "temporarily blocked")
 
 FACEBOOK: tuple[Signature, ...] = (

@@ -73,8 +73,8 @@ def _patch_facebook_empty_profile() -> Callable[[], None]:
     ``FacebookExtractor._extract_profile_page`` retries a page it cannot parse and then returns a
     bare ``{}`` — with no ``set_id`` key. ``FacebookPhotosExtractor.items`` immediately subscripts
     ``["set_id"]`` on it, so the operator gets ``KeyError: 'set_id'`` plus gallery-dl's "report this
-    issue on codeberg" text. Verified identical in 1.32.9 (the installed pin) and 1.32.12 (the
-    newest release), so there is nothing to upgrade to — ``tests/gallerydl/test_upstream_pins.py``
+    issue on codeberg" text. Verified identical in 1.32.9, 1.32.12 and 1.32.15 (the installed
+    pin), so there is nothing to upgrade to — ``tests/gallerydl/test_upstream_pins.py``
     is what tells us when that stops being true.
 
     **This deliberately does NOT do what upstream meant.** The line after the crash site is

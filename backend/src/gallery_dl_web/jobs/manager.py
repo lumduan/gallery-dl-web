@@ -1039,7 +1039,14 @@ class JobManager:
             with contextlib.suppress(OSError):
                 archive_subdir.mkdir(parents=True, exist_ok=True)
             merged.setdefault("archive", str(archive_subdir / f"{username}.sqlite"))
-            merged.setdefault("include_avatar", True)
+            # NOT on Instagram. Observed 2026-10-07 on gallery-dl 1.32.15: the avatar's only
+            # logged-in source, /api/v1/users/<id>/info/, answers 429 on the FIRST request, for
+            # every profile, and upstream has no fix (mikf/gallery-dl#9777). The avatar runs after
+            # posts and reels, so a fully downloaded profile then sat ~4 min in sleep-429 retries
+            # and ended `failed: rate-limited`. The profile card falls back to the first image
+            # (`profiles/store.py:_pick_avatar`). An explicit per-job `include_avatar` still wins.
+            if state.platform != "instagram":
+                merged.setdefault("include_avatar", True)
         else:
             with contextlib.suppress(OSError):
                 archive_dir.mkdir(parents=True, exist_ok=True)

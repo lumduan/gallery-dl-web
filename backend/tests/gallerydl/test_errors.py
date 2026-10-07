@@ -193,7 +193,7 @@ def test_the_observed_instagram_block_is_classified_as_a_rate_limit() -> None:
 
     Before this pattern existed the operator got `reason: dl-failed` and a Python traceback for
     what is simply a rate limit. The block is a 302 to the bare home page; gallery-dl turns it into
-    this wording at instagram.py:186.
+    this wording at instagram.py:182.
     """
     stderr = [
         '  File "/opt/venv/lib/python3.12/site-packages/gallery_dl/extractor/instagram.py", '

@@ -145,10 +145,36 @@ only reads for keys in `_PLATFORM_DEFAULTS`), and `cookies` is then `None`. Sett
 no-ops rather than erroring, and the explicit call keeps the "cookies are set *before* the defaults
 loop, so an `options` key can never overwrite them" invariant intact.
 
-Two anonymous-only Instagram adjustments, neither of which applies to Facebook: `api` is set to
-`graphql` (the default REST `/api/v1/*` endpoints mostly 401 logged-out), and `stories` /
+One anonymous-only Instagram adjustment, which does not apply to Facebook: `stories` /
 `highlights` / `saved` / `collection` are stripped from `include` — logged-out these raise
-`AbortExtraction` and kill the whole walk instead of merely returning nothing.
+`AbortExtraction` and kill the whole walk instead of merely returning nothing. (There used to be a
+second, `api: graphql`. gallery-dl 1.32.12 removed the `api` option, so the switch was deleted
+rather than left setting a key nothing reads.)
+
+**Instagram retired the REST posts listing; gallery-dl < 1.32.12 cannot list a profile.**
+`/api/v1/feed/user/<id>/` (posts) and `/api/v1/clips/user/` (reels) now 302 *every* caller to the
+home page — valid session or not — so on 1.32.9 a profile job died on request #2 with `HTTP
+redirect to home page`. That is textually identical to the 2026-08-26 rate-limit block below. The
+tell is *when*: a block comes after hundreds of requests, while a retired endpoint fails before the
+first file — and the user lookup just before it (topsearch) had returned 200 with real data.
+1.32.12 moved posts / reels / tagged / highlights onto Polaris GraphQL (`POST /graphql/query` with a
+`doc_id` plus lsd/fb_dtsg tokens scraped from the profile page). `pyproject.toml` floors the
+dependency there. Upstream: mikf/gallery-dl#9743.
+
+Two consequences of that move, both observed live on 1.32.15:
+
+- **The manager no longer adds `avatar` to Instagram jobs.** The avatar's logged-in source,
+  `/api/v1/users/<id>/info/`, answers 429 on the *first* request, so it is not a volume limit
+  (upstream #9777, no fix). The avatar runs last, which meant a fully downloaded profile then sat
+  ~4 min in `sleep-429` retries and ended `failed: rate-limited`. The card falls back to the first
+  image (`_pick_avatar`), and an explicit per-job `include_avatar` still wins.
+- **The GraphQL pages are `text/javascript`, and nothing reads their bodies.** `telemetry`'s
+  `_CAPTURABLE_TYPES` covers only json/html, so every body rule (`ig-account-flagged`,
+  `ig-wait-message`, `unparseable-json`) is blind on the endpoint that now carries the whole
+  listing. gallery-dl's `_pagination_graphql` also *breaks out silently* on a page it cannot parse,
+  so a soft block there would end the walk as a short **completed** job. Adding the type is not a
+  one-liner: Instagram's JS bundles are `text/javascript` too, and their string literals plausibly
+  contain `challenge_required`. Any capture must therefore be scoped to `/graphql` paths.
 
 **`include` is resolved exactly once, before the defaults loop** (`_resolve_include`), because the
 avatar block appends to it. It used to be derived twice from raw `options`; leave it that way and
@@ -202,8 +228,8 @@ stays unmatched, since sending that operator to Settings would be wrong.
 what upstream meant.** `FacebookExtractor._extract_profile_page` injects `set_id` only on its
 success branch, so both failure exits return a bare `{}`, and `FacebookPhotosExtractor.items`
 immediately subscripts `["set_id"]` on it — `KeyError: 'set_id'`, reported to the operator as
-gallery-dl's "report this issue on codeberg". Identical in 1.32.9 and 1.32.12, so there is nothing
-to upgrade to. The line *after* the crash site is `if not set_id: return iter(())`, so upstream
+gallery-dl's "report this issue on codeberg". Identical in 1.32.9, 1.32.12 and 1.32.15, so there is
+nothing to upgrade to. The line *after* the crash site is `if not set_id: return iter(())`, so upstream
 intended a silent empty result; restoring that would give a total failure `status 0` / `reason
 "ok"` / zero files — a **silent success**, which for a profile downloader is worse than the crash.
 We raise `AuthRequired` instead, in the exact shape `facebook.py:363` already uses for the sibling
