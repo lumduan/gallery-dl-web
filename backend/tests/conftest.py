@@ -98,6 +98,14 @@ class _FakeStdout:
             return self._lines.pop(0)
         return b""
 
+    async def readuntil(self, separator: bytes = b"\n") -> bytes:
+        # The stderr drain reads with readuntil so it can survive an overlong line; EOF is
+        # IncompleteReadError there, not b"". Lines here are always short and newline-terminated.
+        line = await self.readline()
+        if not line:
+            raise asyncio.IncompleteReadError(b"", None)
+        return line
+
 
 class FakeProc:
     def __init__(

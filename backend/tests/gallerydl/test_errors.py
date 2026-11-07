@@ -193,7 +193,7 @@ def test_the_observed_instagram_block_is_classified_as_a_rate_limit() -> None:
 
     Before this pattern existed the operator got `reason: dl-failed` and a Python traceback for
     what is simply a rate limit. The block is a 302 to the bare home page; gallery-dl turns it into
-    this wording at instagram.py:182.
+    this wording at instagram.py:204.
     """
     stderr = [
         '  File "/opt/venv/lib/python3.12/site-packages/gallery_dl/extractor/instagram.py", '
@@ -269,12 +269,14 @@ def test_detects_the_patched_form_too() -> None:
 
 
 def test_each_marker_matches_on_its_own() -> None:
-    """One of the three is a DEBUG line that only reaches stderr by accident; the other two are
-    ERROR-level and are what the rule actually rests on."""
+    """One of the original three is a DEBUG line that only reaches stderr by accident; the other
+    two are ERROR-level and are what the rule actually rests on. The fourth is gallery-dl 1.32.19's
+    replacement for the KeyError (cb#247): a WARNING, then an empty result instead of a crash."""
     for line in (
         "debug:facebook:Got empty profile photos page, retrying...",
         "error:facebook:An unexpected error occurred: KeyError - 'set_id'. Please run gallery-dl",
         f"error:facebook:AuthRequired: authenticated cookies needed ('{EMPTY_PROFILE_MARKER}')",
+        "warning:facebook:Failed to extract profile 'set_id'",
     ):
         assert detect_empty_profile([line]) is True, line
 

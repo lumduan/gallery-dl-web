@@ -40,9 +40,14 @@ _RATE_LIMIT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     ),
     (
         # OBSERVED 2026-08-26. Instagram's throttle is a 302 to the bare home page, and gallery-dl
-        # turns it into this exact wording (instagram.py:182). Without this the operator got
+        # turns it into this exact wording (instagram.py:204). Without this the operator got
         # `reason: dl-failed` plus a raw traceback for what is simply a rate limit -- the run had
         # done 859 downloads in 885 s, and the only useful action is to wait.
+        # ⚠️ Not ONLY a rate limit. OBSERVED 2026-11-07: a session without the `ds_user_id`
+        # cookie gets the same redirect from the posts listing on its very first page, while the
+        # profile lookup and reels still work. `config_builder._cookie_for` now derives that
+        # cookie, so this wording should again mean a block -- but a redirect before the first
+        # file, on a session that just resolved the profile, is the tell that it does not.
         re.compile(r"HTTP redirect to (?:home|login|challenge) page", re.I),
         "Instagram redirected the run to its home page, which is how it signals a rate limit — "
         "it is not a download error. Wait (typically hours), then run the profile again; files "
@@ -89,13 +94,16 @@ _LOGIN_WALL_RE = re.compile(
     re.I,
 )
 
-# Matched ONLY when the job ran anonymously. gallery-dl's `user_by_screen_name` tries each
-# `user-strategy` in turn, swallows every real exception into a debug line, and then raises one
-# generic NotFoundError — so an auth wall and a genuinely deleted account produce identical text.
-# With no session that ambiguity resolves: every anonymous username-lookup path is walled
-# (topsearch 401; the logged-out profile page no longer embeds `"profile_id"`), so a failed
-# resolution means "needs cookies", not "no such user". With cookies it really can be a dead
-# account, so this stays out of the unconditional set.
+# Matched ONLY when the job ran anonymously. gallery-dl's username lookup swallows every real
+# exception (logging it at debug) and raises one generic NotFoundError — so an auth wall and a
+# genuinely deleted account produce identical text. Since 1.32.17 there is a single path, no
+# longer a `user-strategy` list: `_user_by_web_impl` reads `"profile_id"` from the profile page,
+# then `_user_by_id_impl` asks GraphQL (PolarisProfilePageContentQuery). With no session that
+# ambiguity resolves: the logged-out profile page no longer embeds `"profile_id"` (observed on the
+# pre-1.32.17 paths, where topsearch also answered 401), so a failed resolution means "needs
+# cookies", not "no such user". With cookies it really can be a dead account — or, as on
+# 2026-11-07, a gallery-dl too old for Instagram's current query — so this stays out of the
+# unconditional set.
 _ANON_LOGIN_WALL_RE = re.compile(
     r"requested user could not be found",
     re.I,
@@ -108,25 +116,34 @@ _ANON_LOGIN_WALL_RE = re.compile(
 # text in a red panel.
 #
 # `_extract_profile_page` exhausts its retries and returns a bare `{}`; `FacebookPhotosExtractor`
-# subscripts `["set_id"]` on it. `upstream_patches.install()` turns that into an `AuthRequired`
-# carrying EMPTY_PROFILE_MARKER -- imported from here by the raiser, so the reported reason and the
-# text that triggers it cannot drift apart. The first two alternatives are the patched path; the
-# `KeyError` one is the fallback for a run where the patch failed to install, which is the whole
-# reason this is a second, independent sensor.
+# subscripted `["set_id"]` on it up to 1.32.18. `upstream_patches.install()` turns that into an
+# `AuthRequired` carrying EMPTY_PROFILE_MARKER -- imported from here by the raiser, so the reported
+# reason and the text that triggers it cannot drift apart. The first two alternatives are the
+# patched path; the last two are the fallback for a run where the patch failed to install, which
+# is the whole reason this is a second, independent sensor: `KeyError - 'set_id'` is what
+# gallery-dl <= 1.32.18 crashed with, and `Failed to extract profile 'set_id'` is the WARNING
+# 1.32.19 logs instead (cb#247) before returning an empty result.
 #
-# Two of the three are ERROR-level and one is not, which matters. `Got empty profile photos page`
-# is a `log.debug` call; it reaches stderr only because `output.initialize_logging` resets the root
-# logger to NOTSET *after* the worker's `basicConfig(level=WARNING)`, so that handler prints
-# gallery-dl's debug records too. That is the same accident the urllib3 401 rule leans on, and the
-# same reason it is not allowed to be the only match: `no profile data in the page` (via job.py's
-# `log.error` on the AuthRequired) and `KeyError - 'set_id'` (job.py's unexpected-error handler)
-# are both ERROR-level and survive anyone tightening the log levels.
+# ⚠️ That last fallback is weaker than the one it replaces. Unpatched 1.32.19 does not fail: the
+# photos child yields nothing and the job ends `completed` with zero files, and `_annotate_failure`
+# never runs on a completed job. The warning is matched only for the case where something ELSE
+# fails the run. The real guard for an unpatched run is now the shape pin in
+# `tests/gallerydl/test_upstream_pins.py`, which keeps `install()` from silently no-op-ing.
+#
+# Two of the original three are ERROR-level and one is not, which matters. `Got empty profile
+# photos page` is a `log.debug` call; it reaches stderr only because `output.initialize_logging`
+# resets the root logger to NOTSET *after* the worker's `basicConfig(level=WARNING)`, so that
+# handler prints gallery-dl's debug records too. That is the same accident the urllib3 401 rule
+# leans on, and the same reason it is not allowed to be the only match: `no profile data in the
+# page` (via job.py's `log.error` on the AuthRequired) and `KeyError - 'set_id'` (job.py's
+# unexpected-error handler) are both ERROR-level and survive anyone tightening the log levels.
 EMPTY_PROFILE_MARKER = "no profile data in the page"
 
 _EMPTY_PROFILE_RE = re.compile(
     r"Got empty profile photos page"
     rf"|{re.escape(EMPTY_PROFILE_MARKER)}"
-    r"|KeyError - 'set_id'",
+    r"|KeyError - 'set_id'"
+    r"|Failed to extract profile 'set_id'",
     re.I,
 )
 

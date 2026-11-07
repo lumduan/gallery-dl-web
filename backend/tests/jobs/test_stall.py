@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from collections import deque
+from types import SimpleNamespace
+
+import pytest
 
 from gallery_dl_web.config import Settings
 from gallery_dl_web.jobs import manager as mgr_mod
@@ -345,3 +350,90 @@ def test_warmup_is_generous_by_default(tmp_settings: Settings) -> None:
     assert s.stall_warmup_seconds >= 300
     assert s.stall_warmup_seconds > s.stall_floor_seconds
     assert s.heartbeat_seconds < s.stall_liveness_seconds  # or liveness trips on a healthy worker
+
+
+async def test_an_overlong_stderr_line_does_not_end_the_drain(job_manager) -> None:
+    """gallery-dl 1.32.19 logs a failed lookup's whole profile page (``Server response:\\n…``,
+    instagram.py:1018). ``StreamReader.readline`` raises ValueError on a line past its 64 KB limit;
+    a drain that treated that as "stream over" would stop reading, the pipe would fill, and the
+    blocked worker would be misreported as a stall instead of the lookup failure it was."""
+
+    reader = asyncio.StreamReader(limit=2**16)  # asyncio's subprocess default
+    reader.feed_data(b"debug:instagram:Server response:\n")
+    reader.feed_data(b"<html>" + b"x" * 200_000 + b"</html>\n")
+    reader.feed_data(b"error:instagram:NotFoundError: Requested user could not be found\n")
+    reader.feed_eof()
+    tail: deque[str] = deque(maxlen=50)
+
+    await asyncio.wait_for(
+        job_manager._drain_stderr(SimpleNamespace(id="j"), SimpleNamespace(stderr=reader), tail),
+        timeout=5,
+    )
+
+    assert tail[-1] == "error:instagram:NotFoundError: Requested user could not be found"
+    assert not any("x" * 1000 in line for line in tail), "the overlong line itself must not land"
+
+
+async def test_an_overlong_stderr_line_arriving_in_pieces_is_dropped_whole(job_manager) -> None:
+    """The other overrun: the limit trips before the newline has even arrived. The rest of the line
+    then turns up as what looks like a fresh line, and it must be dropped too — it is still the
+    profile page, and it may carry the session's lsd/fb_dtsg tokens."""
+
+    reader = asyncio.StreamReader(limit=2**16)
+    tail: deque[str] = deque(maxlen=50)
+    drain = asyncio.create_task(
+        job_manager._drain_stderr(SimpleNamespace(id="j"), SimpleNamespace(stderr=reader), tail)
+    )
+    reader.feed_data(b"<html>" + b"x" * 100_000)  # no newline yet
+    await asyncio.sleep(0.05)
+    reader.feed_data(b"y" * 100_000)
+    await asyncio.sleep(0.05)
+    reader.feed_data(b'"fb_dtsg":"SECRETTOKEN"</html>\n')
+    reader.feed_data(b"error:instagram:NotFoundError: Requested user could not be found\n")
+    reader.feed_data(b"last line without a newline")
+    reader.feed_eof()
+    await asyncio.wait_for(drain, timeout=5)
+
+    assert list(tail) == [
+        "[overlong worker stderr line dropped]",
+        "error:instagram:NotFoundError: Requested user could not be found",
+        "last line without a newline",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        # gallery-dl's own debug line (instagram.py:1144), placeholder values in the real shape.
+        (
+            "debug:instagram:Found 'lsd=AbCdEfGh123' "
+            "& 'fb_dtsg=NAfzzzzz-zz:17850000000:1790000000'",
+            "debug:instagram:Found 'lsd=<redacted>' & 'fb_dtsg=<redacted>'",
+        ),
+        # ...and the page JSON it scrapes them from.
+        ('{"lsd":"AbCdEfGh123","x":1}', '{"lsd":"<redacted>","x":1}'),
+        (
+            '"dtsg":{"token":"NAfzzzzz:1:2","valid_for":86400}',
+            '"dtsg":{"token":"<redacted>","valid_for":86400}',
+        ),
+        # Ordinary lines pass through untouched, including words that merely contain the names.
+        (
+            "error:instagram:HttpError: '404 Not Found'",
+            "error:instagram:HttpError: '404 Not Found'",
+        ),
+        (
+            "debug:instagram:Looking up 'Lsdhelper' doc_id",
+            "debug:instagram:Looking up 'Lsdhelper' doc_id",
+        ),
+    ],
+)
+async def test_session_tokens_are_masked_before_the_tail_sees_them(
+    job_manager, raw: str, expected: str
+) -> None:
+
+    reader = asyncio.StreamReader(limit=2**16)
+    reader.feed_data(raw.encode() + b"\n")
+    reader.feed_eof()
+    tail: deque[str] = deque(maxlen=50)
+    await job_manager._drain_stderr(SimpleNamespace(id="j"), SimpleNamespace(stderr=reader), tail)
+    assert list(tail) == [expected]

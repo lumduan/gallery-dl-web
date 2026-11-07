@@ -134,6 +134,16 @@ must NOT reset the progress clock** (it would defeat stall detection entirely).
 consumes it continuously. Undrained, ~64 KB blocks the worker mid-write — its stdout goes silent
 and the stall detector reports a phantom stall. The tail is attached to `failed.message`, which is
 the only place gallery-dl's real error text (auth wall, rate limit, permission denied) ever appears.
+Two things the drain does to every line, both since gallery-dl 1.32.19:
+
+- **A line past the stream's 64 KB limit is discarded, and the drain carries on.** 1.32.19 logs a
+  failed lookup's whole profile page as one debug record (`Server response:\n…`). `readline`
+  answers that with `ValueError`, which the drain used to treat as end-of-stream — wedging the
+  worker on exactly the failure it was about to report. It reads with `readuntil` and drops the
+  line in chunks, never decoding it; the remnant after a split overrun is dropped too.
+- **`lsd` / `fb_dtsg` values are masked** (`_redact_tokens`). gallery-dl logs them at debug, and
+  1.32.19 fetches them *before* the profile lookup, so on the commonest failure that line sits
+  inside the tail. They are not cookies, but `fb_dtsg` authorises requests for its session.
 
 **Cookies are optional; a job with none runs anonymously.** There is no `missing-cookies` failure
 any more — gallery-dl reaches public content logged-out, so `_run_job` falls back to an anonymous
@@ -158,21 +168,44 @@ redirect to home page`. That is textually identical to the 2026-08-26 rate-limit
 tell is *when*: a block comes after hundreds of requests, while a retired endpoint fails before the
 first file — and the user lookup just before it (topsearch) had returned 200 with real data.
 1.32.12 moved posts / reels / tagged / highlights onto Polaris GraphQL (`POST /graphql/query` with a
-`doc_id` plus lsd/fb_dtsg tokens scraped from the profile page). `pyproject.toml` floors the
-dependency there. Upstream: mikf/gallery-dl#9743.
+`doc_id` plus lsd/fb_dtsg tokens scraped from the profile page). Upstream: mikf/gallery-dl#9743.
 
-Two consequences of that move, both observed live on 1.32.15:
+**And Instagram kept changing it: from ~2026-10-16, gallery-dl <= 1.32.17 cannot resolve a
+profile.** Every job died before its first file with `NotFoundError: Requested user could not be
+found` — cookies or not (mikf/gallery-dl#9818, #9829; codeberg cb#519, cb#545). 1.32.17/18
+rewrote the user and posts queries and collect their `relay` parameters from the JS bundles at
+run time (so a run now starts with ~9 `static.cdninstagram.com/rsrc.php` fetches — expected, not a
+fault), and 1.32.17 removed the `user-strategy` option (topsearch is gone). `pyproject.toml`
+floors the dependency at **1.32.19**, the release verified live on 2026-11-07.
+
+**The posts listing now needs `ds_user_id` beside `sessionid`.** Observed 2026-11-07 on 1.32.19,
+one profile, A/B twice: `sessionid` alone → `POST /graphql/query` 302s to the home page (gallery-dl's
+`HTTP redirect to home page`, i.e. the rate-limit text again) while the lookup and reels still
+answer 200; add `ds_user_id` → 200. `config_builder._cookie_for` derives it from the sessionid's
+numeric prefix (`<id>%3A…`), so a stored sessionid keeps working with no re-export; an explicit
+value wins, and a prefix that is not numeric sends nothing rather than a guess. Upstream cb#546 hit
+the same thing and fixed it by sending the full browser cookie set — that is the more future-proof
+answer, and the extension already reads every cookie (`chrome.cookies.getAll`) but sends only
+`sessionid`.
+
+Consequences of the move to Polaris, observed live on 1.32.15 and re-checked on 1.32.19:
 
 - **The manager no longer adds `avatar` to Instagram jobs.** The avatar's logged-in source,
   `/api/v1/users/<id>/info/`, answers 429 on the *first* request, so it is not a volume limit
   (upstream #9777, no fix). The avatar runs last, which meant a fully downloaded profile then sat
   ~4 min in `sleep-429` retries and ended `failed: rate-limited`. The card falls back to the first
   image (`_pick_avatar`), and an explicit per-job `include_avatar` still wins.
+  ➡️ 1.32.16 says it fixed this ("fix `avatar` extractor", cb#466), and on 2026-11-07 an
+  avatar-only job on 1.32.19 completed with one 200 and no 429. One sample; the default is still
+  off until the operator decides to turn it back on.
 - **The GraphQL pages are `text/javascript`, and nothing reads their bodies.** `telemetry`'s
   `_CAPTURABLE_TYPES` covers only json/html, so every body rule (`ig-account-flagged`,
   `ig-wait-message`, `unparseable-json`) is blind on the endpoint that now carries the whole
-  listing. gallery-dl's `_pagination_graphql` also *breaks out silently* on a page it cannot parse,
-  so a soft block there would end the walk as a short **completed** job. Adding the type is not a
+  listing. On 1.32.12-1.32.16 `_pagination_graphql` also *broke out silently* on a page it could
+  not parse, so a soft block there would have ended the walk as a short **completed** job.
+  ➡️ Since 1.32.17 a page that is not JSON or lacks the expected field raises `AbortExtraction:
+  Failed to load API data (…)` instead. Still silent: a well-formed page with no `edges`, or one
+  whose `page_info` is missing or says there is no next page. Adding the type is still not a
   one-liner: Instagram's JS bundles are `text/javascript` too, and their string literals plausibly
   contain `challenge_required`. Any capture must therefore be scoped to `/graphql` paths.
 
@@ -187,7 +220,9 @@ Captured 2026-08-26: a run at `adaptive 4-30` died after 859 downloads / 885 s w
 run's ring buffer, the fatal redirect included, classified `clean`, because the only URL markers
 were `/accounts/login` and Facebook's while the redirect target is the bare domain root. That is why
 the back-off never engaged: `delay == floor` on every observation, the volume ramp carrying the
-whole run alone.
+whole run alone. ➡️ The same redirect is **not always a block**: a retired endpoint (1.32.9) and a
+missing `ds_user_id` cookie (2026-11-07) both produced it on the first listing request, before any
+file — see the two Instagram paragraphs above. *When* it fires is the tell.
 
 `gallerydl/signatures.py` holds the rules as **data** — a per-platform `(name, tier, predicate)`
 table — so the live sensor and the reported reason cannot drift, and so a Meta wording change is a
@@ -217,30 +252,35 @@ records too; that is load-bearing for the match, and there is a second, independ
 classification survives if it ever changes.
 
 **`detect_login_wall` takes `anonymous`, because identical stderr means different things.**
-gallery-dl's `user_by_screen_name` tries each `user-strategy`, swallows every real exception into a
-debug line, and raises one generic `NotFoundError: Requested user could not be found` — so an auth
-wall and a deleted account are textually identical. With no session the ambiguity resolves (every
-anonymous lookup path is walled: topsearch 401, and the logged-out profile page no longer embeds
-`"profile_id"`), so that text counts as a login wall *only* when `anonymous` is set. With cookies it
-stays unmatched, since sending that operator to Settings would be wrong.
+gallery-dl's username lookup swallows every real exception into a debug line and raises one
+generic `NotFoundError: Requested user could not be found` — so an auth wall and a deleted account
+are textually identical. (Since 1.32.17 it is one path, `"profile_id"` from the profile page then
+GraphQL by id; it used to be a `user-strategy` list starting at topsearch.) With no session the
+ambiguity resolves — the logged-out profile page no longer embeds `"profile_id"`, and topsearch
+answered 401 while it existed — so that text counts as a login wall *only* when `anonymous` is set.
+With cookies it stays unmatched, since sending that operator to Settings would be wrong: on
+2026-11-07 the same text, cookied, meant "gallery-dl is too old for Instagram's current query".
 
 **`gallerydl/upstream_patches.py` works around a gallery-dl bug, and it deliberately does NOT do
 what upstream meant.** `FacebookExtractor._extract_profile_page` injects `set_id` only on its
 success branch, so both failure exits return a bare `{}`, and `FacebookPhotosExtractor.items`
-immediately subscripts `["set_id"]` on it — `KeyError: 'set_id'`, reported to the operator as
-gallery-dl's "report this issue on codeberg". Identical in 1.32.9, 1.32.12 and 1.32.15, so there is
-nothing to upgrade to. The line *after* the crash site is `if not set_id: return iter(())`, so upstream
-intended a silent empty result; restoring that would give a total failure `status 0` / `reason
-"ok"` / zero files — a **silent success**, which for a profile downloader is worse than the crash.
-We raise `AuthRequired` instead, in the exact shape `facebook.py:363` already uses for the sibling
-failure, so `errors.py` classifies it with no new pattern and `job.py` logs one clean line instead
-of a traceback. Don't "fix" it back.
+subscripted `["set_id"]` on it up to 1.32.18 — `KeyError: 'set_id'`, reported to the operator as
+gallery-dl's "report this issue on codeberg". **1.32.19 "fixed" that (cb#247) into exactly the
+outcome this patch exists to prevent:** `.get("set_id")`, a warning, `return iter(())` — a total
+failure reported as `status 0` / `reason "ok"` / zero files, a **silent success**, which for a
+profile downloader is worse than the crash. So the upgrade made the patch load-bearing in a new way
+rather than redundant. We raise `AuthRequired` instead, in the exact shape `facebook.py:356` already
+uses for the sibling failure, so `errors.py` classifies it with no new pattern and `job.py` logs one
+clean line instead of a traceback. Don't "fix" it back. `test_upstream_pins.py` pins both the `{}`
+and the empty-result consumer; when it trips, check whether the run now *fails* on its own before
+deleting anything.
 
-Raising is also what un-poisons the avatar: `Extractor.cache` keys on the profile name alone — the
-`set_id=True/False` argument is not part of the key, and `_exp=0` memoizes for the life of the
-process — so the `{}` from `/photos_by` was being handed to `FacebookAvatarExtractor`, which is why
-a failed run logged the avatar finding "No results" *with no request of its own*. Nothing is
-memoized when the call raises. It costs one extra pair of requests on a genuinely walled profile;
+Raising is also what un-poisons the avatar: `Extractor.cache` memoizes for the life of the process
+(`_exp=0`), and the photos and avatar children share one entry — up to 1.32.18 because the key was
+the profile name alone (the `set_id` flag was not part of it), since 1.32.19 because both ask for
+the same `/photos_by` URL. So the `{}` from the photos child was handed to
+`FacebookAvatarExtractor`, which is why a failed run logged the avatar finding "No results" *with
+no request of its own*. Nothing is memoized when the call raises. It costs one extra pair of requests on a genuinely walled profile;
 that is the price of the avatar still working on one that is only partly walled.
 
 **Logged out, a walled Facebook profile and a nonexistent one are indistinguishable.** Probed live

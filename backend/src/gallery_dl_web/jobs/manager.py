@@ -19,6 +19,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import signal
 import sys
 import time
@@ -68,6 +69,25 @@ def _new_job_id() -> str:
 def _token() -> str:
     # secrets would do, but os.urandom is plenty here.
     return os.urandom(6).hex()
+
+
+# gallery-dl logs Instagram's session-bound GraphQL tokens at debug level
+# (`Found 'lsd=%s' & 'fb_dtsg=%s'`, instagram.py:1144), and that debug record reaches stderr like
+# the rest. Since 1.32.19 they are fetched BEFORE the profile lookup, so on the commonest failure
+# the line sits inside the tail the failure message shows. They are not cookies, but `fb_dtsg`
+# authorises requests for the session it was issued to, so it gets the same treatment: masked
+# before the tail or the log ever sees it. Two shapes: gallery-dl's own `lsd=…` / `fb_dtsg=…`, and
+# the `"lsd":"…"` / `"dtsg":{"token":"…"` JSON it scrapes them from, should a fragment of the
+# profile page ever land here.
+_TOKEN_RE = re.compile(
+    r"""(\b(?:lsd|fb_dtsg)=)[^'"\s&,]+"""
+    r"""|("(?:lsd|dtsg|fb_dtsg)":(?:\{"token":)?")[^"]+""",
+    re.I,
+)
+
+
+def _redact_tokens(line: str) -> str:
+    return _TOKEN_RE.sub(lambda m: (m.group(1) or m.group(2)) + "<redacted>", line)
 
 
 def _tail_text(lines: deque[str]) -> str:
@@ -625,21 +645,44 @@ class JobManager:
         This MUST run for the lifetime of the process: stderr is a pipe, and once ~64 KB of
         undrained output accumulates the worker BLOCKS on write. Its stdout then goes silent and
         the stall detector misreports a wedged process as a stalled download.
+
+        A line longer than the stream's limit (64 KB) is DISCARDED, never decoded, and the drain
+        carries on. gallery-dl 1.32.19 logs a failed lookup's entire profile page as one debug
+        record (instagram.py:1018), and ``readline`` answers a line that long with ValueError --
+        which this loop used to treat as the end of the stream, wedging the worker on exactly the
+        failure it was about to report. Discarding rather than truncating also keeps the page,
+        and the session tokens embedded in it, out of the failure message.
         """
         stream = proc.stderr
         if stream is None:
             return
+        skipping = False  # inside an overlong line: drop everything up to its newline
         while True:
             try:
-                raw = await stream.readline()
+                raw = await stream.readuntil(b"\n")
+            except asyncio.IncompleteReadError as exc:
+                raw = b"" if skipping else exc.partial  # EOF; a last unterminated line, if any
+                if not raw:
+                    return
+            except asyncio.LimitOverrunError as exc:
+                # `readuntil` leaves the scanned bytes buffered; consume them without decoding.
+                # If the newline was beyond the limit, the next read returns just it; if it has
+                # not arrived yet, the next read returns the rest of the line. Either way that
+                # next successful read is the line's end, and `skipping` drops it.
+                await stream.readexactly(exc.consumed)
+                if not skipping:
+                    tail.append("[overlong worker stderr line dropped]")
+                skipping = True
+                continue
             except (asyncio.CancelledError, GeneratorExit):
                 raise
             except Exception:  # noqa: BLE001 — draining must never break the job
                 logger.debug("job %s: stderr drain ended early", state.id, exc_info=True)
                 return
-            if not raw:
-                return
-            line = raw.decode("utf-8", errors="replace").rstrip()
+            if skipping:
+                skipping = False
+                continue
+            line = _redact_tokens(raw.decode("utf-8", errors="replace").rstrip())
             if line:
                 tail.append(line)
                 logger.debug("job %s worker stderr: %s", state.id, line)
