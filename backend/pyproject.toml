@@ -23,7 +23,9 @@ dependencies = [
     # those queries again from ~2026-10-16: on <= 1.32.17 every profile lookup ends in
     # "NotFoundError: Requested user could not be found". 1.32.19 is the release verified live.
     "gallery-dl>=1.32.19",
-    "Pillow>=10.0",
+    # 13.0.0 fixes ~40 advisories, two of them critical in the JPEG decoder, and every thumbnail
+    # decodes a third-party image (profiles/thumbnails.py).
+    "Pillow>=13.0",
 ]
 
 [dependency-groups]
