@@ -74,13 +74,11 @@ def test_the_per_file_sleep_is_additive_not_a_spacing_floor() -> None:
 
 
 def test_facebook_still_returns_an_unkeyed_dict_for_a_profile_it_cannot_read() -> None:
-    """The bug ``gallerydl/upstream_patches.py`` exists to work around.
+    """The premise ``gallerydl/upstream_patches.py`` rests on.
 
     ``_extract_profile_page`` injects ``set_id`` only on its success branch, so both failure exits
-    return a bare ``{}`` and ``FacebookPhotosExtractor.items`` raises ``KeyError: 'set_id'`` on it.
-    Present in 1.32.9 and still in 1.32.12 and 1.32.15, so there is nothing to upgrade to. **When
-    this test fails, upstream has fixed it — re-verify and delete the patch**, because a wrapper
-    whose premise is gone is worse than no wrapper.
+    return a bare ``{}``. Present in 1.32.9 and still in 1.32.12, 1.32.15 and 1.32.19. **When this
+    half fails, re-verify the patch** — a wrapper whose premise is gone is worse than no wrapper.
     """
     src = inspect.getsource(FacebookExtractor._extract_profile_page)
     assert "if set_id or user:" in src, "success branch not found — this pin is checking nothing"
@@ -90,10 +88,26 @@ def test_facebook_still_returns_an_unkeyed_dict_for_a_profile_it_cannot_read() -
         "probably delete gallerydl/upstream_patches.py"
     )
 
+
+def test_unpatched_facebook_photos_turn_an_unreadable_profile_into_a_silent_empty_result() -> None:
+    """What the patch prevents, as upstream now ships it.
+
+    Up to 1.32.18 ``FacebookPhotosExtractor.items`` subscripted ``["set_id"]`` on the ``{}`` above
+    and crashed with ``KeyError``. 1.32.19 "fixed" that (cb#247) into exactly the outcome the patch
+    was written to avoid: a WARNING, then ``return iter(())`` — status 0, zero files, a run that
+    reports success. **That fix is not a reason to delete the patch.** If this test fails, read
+    what the consumer does now before deciding the patch is redundant: it is redundant only if an
+    unreadable profile makes the run FAIL.
+    """
     consumer = inspect.getsource(FacebookPhotosExtractor.items)
-    assert "self.cache(" in consumer, "the caller moved — this pin is checking nothing"
-    assert '["set_id"]' in consumer, (
-        "FacebookPhotosExtractor no longer subscripts ['set_id'] — the crash site moved"
+    assert "self.cache(self._extract_profile_page" in consumer, (
+        "the caller no longer goes through _extract_profile_page — the patch may not be reached"
+    )
+    assert '.get("set_id")' in consumer, "set_id lookup moved — this pin is checking nothing"
+    assert "if not set_id:" in consumer, "the empty-result branch moved — this pin checks nothing"
+    assert "return iter(())" in consumer, (
+        "an unreadable profile no longer yields an empty result — re-verify whether the run now "
+        "fails on its own, and only then consider deleting gallerydl/upstream_patches.py"
     )
 
 

@@ -18,9 +18,11 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "sse-starlette>=2.1",
     "pydantic-settings>=2.5",
-    # 1.32.12 moved Instagram posts/reels onto the Polaris GraphQL API. Instagram retired the REST
-    # /api/v1/feed/user/ listing older versions use: it 302s every caller to the home page.
-    "gallery-dl>=1.32.12",
+    # 1.32.12 moved Instagram posts/reels onto the Polaris GraphQL API (Instagram retired the REST
+    # /api/v1/feed/user/ listing: it 302s every caller to the home page). Instagram then changed
+    # those queries again from ~2026-10-16: on <= 1.32.17 every profile lookup ends in
+    # "NotFoundError: Requested user could not be found". 1.32.19 is the release verified live.
+    "gallery-dl>=1.32.19",
     "Pillow>=10.0",
 ]
 

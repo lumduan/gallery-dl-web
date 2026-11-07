@@ -68,19 +68,18 @@ def uninstall() -> None:
 
 
 def _patch_facebook_empty_profile() -> Callable[[], None]:
-    """Make an unreadable Facebook profile a classified failure instead of a ``KeyError``.
+    """Make an unreadable Facebook profile a classified failure, not a crash or a silent success.
 
     ``FacebookExtractor._extract_profile_page`` retries a page it cannot parse and then returns a
-    bare ``{}`` — with no ``set_id`` key. ``FacebookPhotosExtractor.items`` immediately subscripts
-    ``["set_id"]`` on it, so the operator gets ``KeyError: 'set_id'`` plus gallery-dl's "report this
-    issue on codeberg" text. Verified identical in 1.32.9, 1.32.12 and 1.32.15 (the installed
-    pin), so there is nothing to upgrade to — ``tests/gallerydl/test_upstream_pins.py``
-    is what tells us when that stops being true.
+    bare ``{}`` — with no ``set_id`` key. Up to 1.32.18 ``FacebookPhotosExtractor.items``
+    subscripted ``["set_id"]`` on it, so the operator got ``KeyError: 'set_id'`` plus gallery-dl's
+    "report this issue on codeberg" text (verified in 1.32.9, 1.32.12 and 1.32.15).
 
-    **This deliberately does NOT do what upstream meant.** The line after the crash site is
-    ``if not set_id: return iter(())``, so the intent was a silent empty result. Restoring that
-    would give a total failure ``status 0`` / ``reason "ok"`` / zero files — a *silent success*,
-    which for a profile downloader is worse than the crash. Do not "fix" this back.
+    **1.32.19 "fixed" the crash (cb#247) into exactly what this patch exists to prevent**:
+    ``.get("set_id")``, a WARNING, then ``return iter(())`` — status 0 / reason "ok" / zero files,
+    a *silent success*, which for a profile downloader is worse than the crash. So the upgrade is
+    not a reason to delete this; it makes it load-bearing in a new way. Do not "fix" this back.
+    ``tests/gallerydl/test_upstream_pins.py`` pins both the ``{}`` and the empty-result consumer.
 
     ``AuthRequired`` rather than a custom exception, for three reasons: it is upstream's own idiom
     for the sibling failure ten lines above (the "This content isn't available right now" page);
@@ -88,14 +87,14 @@ def _patch_facebook_empty_profile() -> Callable[[], None]:
     of the unexpected-error path; and its rendered text contains "authenticated cookies needed",
     which ``errors.py`` already classifies as a login wall even with every other edit reverted.
 
-    Raising also un-poisons the avatar. ``Extractor.cache`` keys on the profile name alone — the
-    ``set_id=True/False`` argument is not part of the key and ``_exp=0`` memoizes for the life of
-    the process — so today's ``{}`` from ``/photos_by`` is handed straight back to
-    ``FacebookAvatarExtractor``, which is why a failed run logs the avatar finding "No results"
-    with no request of its own. Nothing is memoized when the call raises, so the avatar fetches its
-    own page and can still succeed on a profile whose ``/`` parses even though ``/photos_by`` does
-    not. It costs one extra pair of requests on a profile that is genuinely walled; that is the
-    price of the avatar working on one that is only partly walled.
+    Raising also keeps the ``{}`` out of the cache the avatar reads. ``Extractor.cache`` memoizes
+    for the life of the process (``_exp=0``). Up to 1.32.18 it keyed on the profile name alone (the
+    ``set_id`` flag was not part of the key); since 1.32.19 it keys on the URL, and the photos and
+    avatar extractors both ask for ``/photos_by``. Either way a memoized ``{}`` from the photos
+    child is handed straight to ``FacebookAvatarExtractor``, which then finds no avatar with no
+    request of its own. Nothing is memoized when the call raises, so the avatar fetches the page
+    again and can still succeed if the second read parses. That costs one extra pair of requests on
+    a profile that is genuinely walled.
     """
     from gallery_dl.extractor.facebook import FacebookExtractor
 
@@ -112,7 +111,7 @@ def _patch_facebook_empty_profile() -> Callable[[], None]:
         result = original(self, url)
         if not result:
             # The whole dict, never `result["set_id"]`: an empty set id is *normal* for the
-            # `/{profile}` URL that the info and avatar extractors ask for, and testing the value
+            # `/{profile}` URL that the info extractor asks for, and testing the value
             # would fail those on healthy profiles. `{}` is the only "could not read the page"
             # signal, because the success branch returns as soon as *either* marker parses.
             raise self.exc.AuthRequired("authenticated cookies", "profile", EMPTY_PROFILE_MARKER)

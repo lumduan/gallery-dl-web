@@ -107,3 +107,8 @@ Answer three questions, then write the signature table against the answers:
    field (`:1376`) and when `page_info` says there is no next page (`:1391`). So the question is
    now different: does a soft limit end the walk early and get reported as a **completed** job?
    Compare the file count against the profile's post count.
+   ➡️ **Narrowed by 1.32.17.** In 1.32.19 (`instagram.py:1345`) a page that will not parse, or
+   lacks its field, raises `AbortExtraction: Failed to load API data (…)` — loud, not silent.
+   Two silent exits remain: a well-formed page with no `edges` anywhere, and one whose
+   `page_info` is missing or says `has_next_page: false` — which is also what a soft limit
+   dressed as "the end" would look like. The file-count comparison above still applies.

@@ -26,6 +26,7 @@ snake_case — the defaults loop below looks them up by the same name it sets th
 from __future__ import annotations
 
 from typing import Any, Protocol
+from urllib.parse import unquote
 
 type ConfigPath = tuple[str, ...]
 
@@ -262,6 +263,17 @@ def _resolve_include(platform: str, options: dict[str, Any], anonymous: bool) ->
     return ",".join(kept) if kept else "posts"
 
 
+def _ig_ds_user_id(sessionid: str) -> str | None:
+    """The numeric account id a ``sessionid`` starts with, or None if it does not have one.
+
+    A sessionid reads ``<user id>%3A<token>%3A<n>%3A<signature>`` (``%3A`` is ``:``), so the
+    ``ds_user_id`` cookie a browser sends beside it is recoverable from it alone. Settings pastes
+    and the extension both store the value URL-encoded, but a hand-copied decoded one works too.
+    """
+    prefix = unquote(sessionid).split(":", 1)[0]
+    return prefix if prefix.isdigit() else None
+
+
 def _cookie_for(platform: str, cookies: Any) -> Any:
     """Validate + normalize the cookie payload for the platform."""
     if platform == "instagram":
@@ -272,7 +284,18 @@ def _cookie_for(platform: str, cookies: Any) -> Any:
             raise ValueError(
                 "instagram requires a 'sessionid' cookie (gallery-dl disables password login)"
             )
-        return {"sessionid": sessionid}
+        ig: dict[str, str] = {"sessionid": sessionid}
+        # OBSERVED 2026-11-07 on gallery-dl 1.32.19, one profile, run twice each way: with
+        # `sessionid` alone the posts listing (`POST /graphql/query`,
+        # PolarisProfilePostsTabContentQuery) 302s to the home page -- gallery-dl's
+        # `HTTP redirect to home page`, textually the 2026-08-26 block -- while the profile
+        # lookup and the reels listing still answer 200. With `ds_user_id` added it answers 200.
+        # This worked on `sessionid` alone until ~2026-10-20 (upstream cb#546, where sending the
+        # full browser cookie set was the fix). An explicit value in the payload wins.
+        ds_user_id = str(cookies.get("ds_user_id") or "") or _ig_ds_user_id(sessionid)
+        if ds_user_id:
+            ig["ds_user_id"] = ds_user_id
+        return ig
 
     if platform == "facebook":
         # gallery-dl accepts a Netscape file path (str) or a name/value dict.

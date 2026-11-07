@@ -76,7 +76,9 @@ the session. See [`extension/README.md`](extension/README.md).
 **Option B — manual paste (fallback).** Open the app's **Settings** page:
 
 - **Instagram** — copy the `sessionid` cookie: log into instagram.com → DevTools → **Application**
-  → **Cookies** → copy `sessionid` (HttpOnly, so via DevTools, not JS).
+  → **Cookies** → copy `sessionid` (HttpOnly, so via DevTools, not JS). That one value is enough:
+  since late October 2026 Instagram's posts listing also wants `ds_user_id`, and the backend derives
+  it from the sessionid (it is the number the sessionid starts with).
 - **Facebook** — export a Netscape `cookies.txt` (e.g. with "Get cookies.txt LOCALLY") while logged
   into facebook.com. ⚠️ FB cookies (`c_user` + `xs`) grant **full account access** — use a dedicated
   account.
@@ -265,7 +267,8 @@ delay itself, is why Facebook used to be so much slower:
 So pacing is **adaptive by default**. A run starts at the floor and only slows down on evidence the
 platform is pushing back. What that looks like is platform-specific and was measured rather than
 guessed: **Instagram signals a block by redirecting to its bare home page** (captured after 859
-downloads in 885 s), Facebook serves a block page with HTTP 200, and either can also arrive as a
+downloads in 885 s — though the same redirect on the *first* request of a run has twice meant
+something else: a retired endpoint, and a missing cookie), Facebook serves a block page with HTTP 200, and either can also arrive as a
 429 or 403/503. Signatures are tiered — a transient throttle backs off and keeps going, while a
 terminal one stops, because retrying into a checkpoint only extends the block. A response that
 cannot be classified counts as neither. The run speeds back up after a clean streak. Only *extractor* requests

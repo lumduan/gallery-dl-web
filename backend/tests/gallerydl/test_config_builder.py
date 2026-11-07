@@ -121,6 +121,35 @@ def test_unsupported_platform() -> None:
         )
 
 
+# Placeholders in the real shape -- never a real session. The prefix is the account id.
+_SID_ENCODED = "1234567890%3AAbCdEfGhIjKlMn%3A12%3AAYzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+_SID_DECODED = "1234567890:AbCdEfGhIjKlMn:12:AYzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+
+
+@pytest.mark.parametrize("sid", [_SID_ENCODED, _SID_DECODED], ids=["url-encoded", "decoded"])
+def test_instagram_derives_ds_user_id_from_the_sessionid(sid: str) -> None:
+    """Without `ds_user_id` the posts listing 302s to the home page (observed 2026-11-07)."""
+    fake = FakeConfig()
+    config_builder.apply(_ig(cookies={"sessionid": sid}), fake)
+    assert fake.as_dict()[(("extractor", "instagram"), "cookies")] == {
+        "sessionid": sid,
+        "ds_user_id": "1234567890",
+    }
+
+
+def test_instagram_explicit_ds_user_id_wins_over_the_derived_one() -> None:
+    fake = FakeConfig()
+    config_builder.apply(_ig(cookies={"sessionid": _SID_ENCODED, "ds_user_id": "42"}), fake)
+    assert fake.as_dict()[(("extractor", "instagram"), "cookies")]["ds_user_id"] == "42"
+
+
+def test_instagram_sessionid_without_an_id_prefix_sends_no_ds_user_id() -> None:
+    """Guessing a value would be worse than omitting it: a wrong id is a mismatched session."""
+    fake = FakeConfig()
+    config_builder.apply(_ig(cookies={"sessionid": "notanid%3Aabc"}), fake)
+    assert fake.as_dict()[(("extractor", "instagram"), "cookies")] == {"sessionid": "notanid%3Aabc"}
+
+
 def test_instagram_missing_sessionid() -> None:
     with pytest.raises(ValueError, match="sessionid"):
         config_builder.apply(
