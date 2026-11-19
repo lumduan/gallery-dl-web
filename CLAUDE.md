@@ -67,6 +67,8 @@ unrelated container on the host hostage.
 - `backend/src/gallery_dl_web/gallerydl/config_builder.py` — pure payload→`config.set` translator.
 - `backend/src/gallery_dl_web/gallerydl/pacing.py` — the adaptive request pacer + its three patches.
 - `backend/src/gallery_dl_web/gallerydl/upstream_patches.py` — workarounds for gallery-dl bugs.
+- `backend/src/gallery_dl_web/gallerydl/session_watch.py` — notices a platform deleting the
+  stored session cookie (a logout that otherwise reads as a rate limit).
 - `backend/src/gallery_dl_web/pacing/store.py` — operator pacing overrides (`<data_dir>/pacing.json`).
 - `backend/src/gallery_dl_web/files/index.py` — the downloads listing, off the event loop.
 - `backend/src/gallery_dl_web/api/routes_jobs.py` — SSE endpoint + zip.
@@ -144,6 +146,14 @@ Two things the drain does to every line, both since gallery-dl 1.32.19:
 - **`lsd` / `fb_dtsg` values are masked** (`_redact_tokens`). gallery-dl logs them at debug, and
   1.32.19 fetches them *before* the profile lookup, so on the commonest failure that line sits
   inside the tail. They are not cookies, but `fb_dtsg` authorises requests for its session.
+
+**The tail is a `StderrTail`: the rolling 50 lines plus a few pinned evidence lines.** The window is
+right for quoting a failure and wrong for a clue that comes first. On 2026-11-19 the logged-out
+session marker was line 6 of 111. Each child extractor then logged a ~45-line debug traceback for
+its own redirect, so when the job failed the marker was 60 lines back, and `_annotate_failure` saw
+only the block's wording. `errors.is_evidence` decides what is pinned: only lines our own worker
+writes, once per run. Do not "simplify" this into a bigger window. That would quote more traceback
+and still lose a clue from early in a long run.
 
 **Cookies are optional; a job with none runs anonymously.** There is no `missing-cookies` failure
 any more — gallery-dl reaches public content logged-out, so `_run_job` falls back to an anonymous
@@ -224,6 +234,23 @@ whole run alone. ➡️ The same redirect is **not always a block**: a retired e
 missing `ds_user_id` cookie (2026-11-07) both produced it on the first listing request, before any
 file — see the two Instagram paragraphs above. *When* it fires is the tell.
 
+**A third look-alike is a logged-out session, and it has a real tell: Instagram deletes the
+cookie.** Observed 2026-11-19 on a `sessionid` exported 25 days earlier: the run's *first* request,
+the profile page, answered 302 to the home page with `Set-Cookie: sessionid=…; expires=Thu, 01 Jan
+1970 …; Max-Age=-…`, and `GET /` then bounced to itself the same way. With no cookies the same
+profile answered 200, which rules out a block of the IP or the profile. gallery-dl reported it as
+`HTTP redirect to home page`, so the job said "rate-limited, wait hours", and waiting can never
+revive a deleted session. `gallerydl/session_watch.py` is a `requests` response hook installed for
+**every** run (not only `adaptive`, where the pacer lives). It logs one WARNING carrying
+`errors.SESSION_LOGGED_OUT_MARKER` when an `instagram.com` reply expires `sessionid`; it reads
+cookie *names* only and never a value. The pacer gets the same names as `Observation.deleted_cookies`
+and matches `ig-session-logged-out`, which sits ABOVE `ig-redirect-root` because the self-bounce on
+`/` matches both. Only the run's first terminal rule is announced as a pushback. The rest are the
+tail of the same bounce, and announcing them put "this is a rate limit" under the line that said it
+was not one. Facebook's `c_user`/`xs` would be the analogue, but they are not observed, so they are
+deliberately not in `SESSION_COOKIES`: a rule that sends the operator to re-export cookies must not
+be guessed.
+
 `gallerydl/signatures.py` holds the rules as **data** — a per-platform `(name, tier, predicate)`
 table — so the live sensor and the reported reason cannot drift, and so a Meta wording change is a
 one-line edit. Four tiers, and the split is the point: `THROTTLE` backs off and keeps going,
@@ -239,7 +266,9 @@ because the rules are host- and marker-scoped.
 matches gallery-dl's own `AuthRequired` wording and `_annotate_failure` promotes it to
 `reason: login-required`. It is checked *after* `detect_rate_limit`: Facebook's block page also
 reads login-ish, and there the right advice is "wait", not "re-export your cookies" — retrying
-extends the block. Keep that order.
+extends the block. Keep that order. **The one thing checked before the rate limit is a deleted
+session cookie** (`detect_session_logged_out`): it is direct evidence, the redirect wording beside it
+is inference, and even when a block caused the logout only fresh cookies help.
 
 **Match the text the platform actually returns, not the text gallery-dl's source defines.** The
 first version of that classifier matched only the `AuthRequired` prose and missed the most common
@@ -304,8 +333,9 @@ patched.** `tests/conftest.py`'s autouse `_no_real_spawn` covers the manager; `t
 adds the worker-side siblings, because that code runs *in-process*: `_no_real_http` makes
 `HTTPAdapter.send` raise, and `_pristine_extractor` asserts after every test that `Extractor.request`,
 `_init_session`, `FacebookExtractor._extract_profile_page` and the root log handlers were restored —
-`pacing.install` and `upstream_patches.install` both mutate class-level state that would otherwise
-pace, log and re-classify every later test. That fixture imports the Facebook extractor eagerly
+`pacing.install`, `session_watch.install` and `upstream_patches.install` all mutate class-level
+state that would otherwise pace, log and re-classify every later test. The first two both wrap
+`_init_session`, so `worker.run` undoes them in reverse order of installing. That fixture imports the Facebook extractor eagerly
 rather than probing `sys.modules`: a guard that only checks what happened to be imported is the kind
 of check that reports success because it checked nothing.
 

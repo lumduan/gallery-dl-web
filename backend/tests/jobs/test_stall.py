@@ -182,6 +182,37 @@ async def test_rate_limit_overrides_the_gallerydl_reason(
     assert fs["exit_status"] == 4  # gallery-dl's own status is preserved
 
 
+async def test_a_logged_out_session_is_login_required_not_a_rate_limit(
+    job_manager, cookie_store, fake_spawn, monkeypatch
+) -> None:
+    """2026-11-19, through the real drain and the real 50-line window.
+
+    The worker announces the logout on its first reply; the children's tracebacks then push that
+    line 60+ lines back, and what is left reads exactly like a rate-limit block. Before
+    ``StderrTail`` this ended ``rate-limited``, "wait (typically hours)".
+    """
+    from tests.gallerydl.test_errors import IG_LOGGED_OUT
+
+    cookie_store.update(ig_sessionid="SID")
+    lines = [
+        _ev({"type": "started", "url": "u"}),
+        _ev({"type": "failed", "exit_status": 4, "reason": "dl-failed"}),
+    ]
+    stderr = [f"{line}\n" for line in IG_LOGGED_OUT]
+    monkeypatch.setattr(mgr_mod, "spawn_worker", fake_spawn(lines, stderr_lines=stderr))
+
+    jid = await job_manager.create_job("https://instagram.com/someprofile/", "instagram")
+    await job_manager.wait_for(jid)
+    state = job_manager.get(jid)
+    assert state is not None
+    fs = state.final_summary
+    assert fs is not None
+    assert fs["reason"] == "login-required"
+    assert "waiting will not bring the session back" in fs["message"]
+    assert "Wait (typically hours)" not in fs["message"]
+    assert fs["exit_status"] == 4
+
+
 async def test_ordinary_failure_keeps_reason_and_gets_stderr_tail(
     job_manager, cookie_store, fake_spawn, monkeypatch
 ) -> None:

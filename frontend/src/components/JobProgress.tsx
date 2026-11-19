@@ -30,6 +30,11 @@ function describe(ev: JobEvent): string {
     case "pushback":
       // The operator's cue that this is the platform, not the app. `terminal` means the run is
       // over and retrying would extend the block, so it must not read like a transient hiccup.
+      // A logged-out session is the exception: it is also terminal, but waiting cannot fix it,
+      // so calling it a rate limit sends the operator the wrong way.
+      if (ev.tier === "terminal" && SESSION_RULES.includes(ev.rule ?? "")) {
+        return `⛔ ${ev.platform ?? "platform"} logged this session out (${ev.rule}) — not a rate limit: refresh the cookies`;
+      }
       return ev.tier === "terminal"
         ? `⛔ ${ev.platform ?? "platform"} stopped the run (${ev.rule ?? "?"}) — this is a rate limit, not a download error`
         : `🐢 ${ev.platform ?? "platform"} pushed back (${ev.rule ?? "?"}) — backed off to ${ev.delay ?? 0}s`;
@@ -80,6 +85,10 @@ function StatusBadge({ status }: { status: string }) {
 
 /** Pacing reasons that are the controller working normally, not the platform pushing back. */
 const PACING_ROUTINE = ["ramp", "recovered"];
+
+/** Terminal pushback rules that mean "the platform logged the stored session out", not a block.
+ *  Backend: `gallerydl/signatures.py`. */
+const SESSION_RULES = ["ig-session-logged-out"];
 
 const TERMINAL_STATUSES = ["completed", "failed", "cancelled"];
 

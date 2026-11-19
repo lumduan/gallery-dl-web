@@ -24,6 +24,7 @@ import signal
 import sys
 import time
 from collections import deque
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -32,9 +33,12 @@ from gallery_dl_web.cookies.store import CookieStore
 from gallery_dl_web.gallerydl.errors import (
     EMPTY_PROFILE_MESSAGE,
     LOGIN_WALL_MESSAGE,
+    SESSION_LOGGED_OUT_MESSAGE,
     detect_empty_profile,
     detect_login_wall,
     detect_rate_limit,
+    detect_session_logged_out,
+    is_evidence,
 )
 from gallery_dl_web.jobs.models import JobState, JobStatus
 from gallery_dl_web.jobs.worker_runner import spawn_worker
@@ -90,6 +94,34 @@ def _redact_tokens(line: str) -> str:
     return _TOKEN_RE.sub(lambda m: (m.group(1) or m.group(2)) + "<redacted>", line)
 
 
+_STDERR_EVIDENCE_LINES = 5
+
+
+class StderrTail(deque[str]):
+    """The worker's last ``_STDERR_TAIL_LINES`` stderr lines plus every early EVIDENCE line.
+
+    The rolling window is right for quoting a failure, and wrong for a clue that comes first.
+    OBSERVED 2026-11-19: a logged-out Instagram session is announced on line 6 of 111 (the
+    ``session_watch`` marker, on the run's first reply), and then each child extractor logs a
+    ~45-line debug traceback for its own ``HTTP redirect to home page``. By the time the job failed
+    the marker was 60 lines back, so ``_annotate_failure`` saw only the redirect wording and said
+    "rate-limited, wait hours" to a session that waiting could never revive.
+
+    ``evidence`` keeps a line ``errors.is_evidence`` recognises, out of reach of the rolling
+    window. It is a separate, small buffer rather than a bigger window on purpose: the window is
+    what the failure message quotes, and a bigger one would only quote more traceback.
+    """
+
+    def __init__(self, maxlen: int = _STDERR_TAIL_LINES) -> None:
+        super().__init__(maxlen=maxlen)
+        self.evidence: deque[str] = deque(maxlen=_STDERR_EVIDENCE_LINES)
+
+    def append(self, line: str) -> None:
+        super().append(line)
+        if is_evidence(line):
+            self.evidence.append(line)
+
+
 def _tail_text(lines: deque[str]) -> str:
     """Render captured worker stderr for a failure message, newest-biased and length-bounded."""
     if not lines:
@@ -112,11 +144,24 @@ def _annotate_failure(
     gallery-dl reason and gets the raw tail appended, which is where the real cause (permission
     denied, 404) shows up.
 
-    Order matters: a rate limit is checked FIRST because Facebook's block page is also served with
-    login-ish wording, and "wait it out" is the correct advice there — "add cookies" is not. The
-    unreadable-profile case is checked before the generic wall for the mirror-image reason: its
-    text matches both, and only its message names the wrong-URL possibility.
+    Order matters: a rate limit is checked before the login walls because Facebook's block page is
+    also served with login-ish wording, and "wait it out" is the correct advice there — "add
+    cookies" is not. The unreadable-profile case is checked before the generic wall for the
+    mirror-image reason: its text matches both, and only its message names the wrong-URL
+    possibility.
+
+    The one thing that outranks the rate limit is a session the platform DELETED. Instagram logs a
+    session out with a 302 to its home page, which gallery-dl reports in the block's exact words
+    (``HTTP redirect to home page``). OBSERVED 2026-11-19, when this ordering was the other way
+    round: the operator was told to wait hours for a session that waiting could never bring back.
+    The deleted cookie is direct evidence; the redirect wording is only inference.
     """
+    # A plain deque (every caller but the drain's StderrTail) simply has no pinned evidence.
+    evidence: Iterable[str] = getattr(stderr_tail, "evidence", ())
+    if detect_session_logged_out([*evidence, *stderr_tail]):
+        event["reason"] = "login-required"
+        event["message"] = SESSION_LOGGED_OUT_MESSAGE
+        return
     limit = detect_rate_limit(stderr_tail)
     if limit is not None:
         event["reason"] = "rate-limited"
@@ -547,7 +592,7 @@ class JobManager:
             proc = await spawn_worker(python, payload)
             # Publish the process so pause/resume/cancel can signal it from an HTTP handler.
             self._procs[state.id] = proc
-            stderr_tail: deque[str] = deque(maxlen=_STDERR_TAIL_LINES)
+            stderr_tail: deque[str] = StderrTail(_STDERR_TAIL_LINES)
             drain = asyncio.create_task(self._drain_stderr(state, proc, stderr_tail))
             try:
                 outcome = await self._stream_with_stall(state, proc, attempt, stderr_tail)

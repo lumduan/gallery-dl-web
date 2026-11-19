@@ -104,6 +104,68 @@ class TestTheCapturedBlock:
         assert classify("instagram", block)[0] is Tier.TERMINAL
 
 
+class TestTheLoggedOutSession:
+    """Transcribed from 2026-11-19: a session Instagram had logged out, on the run's first request.
+
+    Statuses and paths are what Instagram sent (profile name replaced). With no cookies the same
+    profile page answered 200, so this is not a block, and its rule must say so.
+    """
+
+    def test_the_first_reply_names_the_logout(self) -> None:
+        bounce = Observation(
+            status=302,
+            url="https://www.instagram.com/someprofile/",
+            content_type='text/html; charset="utf-8"',
+            body="",
+            streamed=False,
+            deleted_cookies=("sessionid",),
+        )
+        assert classify("instagram", bounce) == (Tier.TERMINAL, "ig-session-logged-out")
+
+    def test_it_outranks_the_redirect_rule_when_the_home_page_bounces_to_itself(self) -> None:
+        """Probed the same day: with the dead cookie, ``GET /`` 302s to ``/`` and deletes it too.
+        That path also matches ``ig-redirect-root``, so this pins the table ORDER."""
+        self_bounce = Observation(
+            status=302,
+            url="https://www.instagram.com/",
+            content_type="text/html",
+            body="",
+            streamed=False,
+            deleted_cookies=("sessionid",),
+        )
+        assert classify("instagram", self_bounce) == (Tier.TERMINAL, "ig-session-logged-out")
+
+    def test_without_the_deletion_the_home_page_is_still_the_block(self) -> None:
+        assert classify(
+            "instagram", obs("https://www.instagram.com/", content_type="text/html")
+        ) == (
+            Tier.TERMINAL,
+            "ig-redirect-root",
+        )
+
+    def test_another_cookie_being_deleted_is_not_a_logout(self) -> None:
+        o = Observation(
+            status=200,
+            url="https://www.instagram.com/someprofile/",
+            content_type="text/html",
+            body="",
+            streamed=False,
+            deleted_cookies=("rur", "csrftoken"),
+        )
+        assert classify("instagram", o) == (Tier.CLEAN, None)
+
+    def test_it_is_instagram_only(self) -> None:
+        o = Observation(
+            status=302,
+            url="https://www.facebook.com/someprofile",
+            content_type="text/html",
+            body="",
+            streamed=False,
+            deleted_cookies=("sessionid",),
+        )
+        assert classify("facebook", o)[1] != "ig-session-logged-out"
+
+
 # --- the tiers ------------------------------------------------------------------------------------
 
 

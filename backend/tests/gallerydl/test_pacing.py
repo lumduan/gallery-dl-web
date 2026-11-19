@@ -445,6 +445,49 @@ def test_a_pushback_event_names_the_rule_that_matched() -> None:
     assert pushbacks[0]["rule"] == "ig-redirect-root"
 
 
+def test_the_first_terminal_rule_names_the_run_and_is_the_only_one_announced() -> None:
+    """2026-11-19: a logged-out session's 302 is followed by the home page itself, which matches
+    ``ig-redirect-root``, and each child extractor repeats the pair. Announcing every one put
+    "this is a rate limit" directly under the line that said it was not one.
+
+    ``_clock()`` clears MIN_EVENT_INTERVAL on every call, so the time throttle cannot be what
+    suppresses the later ones here.
+    """
+    from types import SimpleNamespace
+
+    from urllib3._collections import HTTPHeaderDict
+
+    def logout(url: str) -> FakeResponse:
+        r = FakeResponse(302, url=url, body=b"", headers={"content-type": "text/html"})
+        h = HTTPHeaderDict()
+        h.add("Set-Cookie", "sessionid=x; expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=-1")
+        r.raw = SimpleNamespace(headers=h)  # type: ignore[attr-defined]
+        return r
+
+    def home() -> FakeResponse:
+        return FakeResponse(
+            200, url="https://www.instagram.com/", headers={"content-type": "text/html"}
+        )
+
+    seen: list[dict[str, Any]] = []
+    p = _pacer(emit=seen.append, platform="instagram")
+    for _child in range(2):
+        p.observe(logout("https://www.instagram.com/someprofile/"))
+        p.observe(home())
+
+    pushbacks = [e for e in seen if e["type"] == "pushback"]
+    assert [e["rule"] for e in pushbacks] == ["ig-session-logged-out"]
+    assert p.terminal_reason == "ig-session-logged-out"
+    # Every response is still judged and recorded: the telemetry is where the whole bounce shows.
+    assert [t["rule"] for t in p.telemetry()] == [
+        "ig-session-logged-out",
+        "ig-redirect-root",
+        "ig-session-logged-out",
+        "ig-redirect-root",
+    ]
+    assert p.delay == p.max_delay, "a terminal must still pin the ceiling"
+
+
 # --- the Extractor.request patch ------------------------------------------------------------------
 
 

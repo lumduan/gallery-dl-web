@@ -35,7 +35,13 @@ from typing import IO, Any
 # Module-level references so tests can monkeypatch (e.g. ``gallery_dl.job.DownloadJob``).
 from gallery_dl import config, job, output
 
-from gallery_dl_web.gallerydl import config_builder, events, pacing, upstream_patches
+from gallery_dl_web.gallerydl import (
+    config_builder,
+    events,
+    pacing,
+    session_watch,
+    upstream_patches,
+)
 
 logger = logging.getLogger("gallery_dl_web.worker")
 
@@ -235,6 +241,21 @@ def _install_upstream_patches() -> Callable[[], None] | None:
         return None
 
 
+def _install_session_watch() -> Callable[[], None] | None:
+    """Watch every reply for the platform deleting the session cookie. Never fatal.
+
+    Installed for every run, in both pacing modes, because the evidence it looks for (a
+    ``Set-Cookie`` that expires ``sessionid``) reaches no other sensor. Not installing it degrades
+    to the old report — "rate-limited" — for a logged-out session, which is wrong advice but not a
+    failed job.
+    """
+    try:
+        return session_watch.install()
+    except Exception:
+        logger.exception("the session-cookie watch could not be installed; continuing without it")
+        return None
+
+
 def _install_sigterm_flush() -> Callable[[], None]:
     """Emit the telemetry before the manager's SIGTERM kills us. Returns a restore callable.
 
@@ -326,9 +347,13 @@ def run(payload: dict[str, Any]) -> int:
     heartbeat: threading.Event | None = None
     stop_pacing: Callable[[], None] | None = None
     stop_patches: Callable[[], None] | None = None
+    stop_session_watch: Callable[[], None] | None = None
     restore_sigterm: Callable[[], None] | None = None
     try:
         stop_patches = _install_upstream_patches()
+        # Before _install_pacing: both wrap Extractor._init_session, so they must be undone in
+        # the reverse order (see the finally block), or one restore would reinstate the other.
+        stop_session_watch = _install_session_watch()
         config_builder.apply(payload, config)
         # After config_builder (whose `sleep-request` is the seed and the fallback) and before
         # DownloadJob, because Job.run() -> _init() -> extractor.initialize() builds the session
@@ -379,6 +404,8 @@ def run(payload: dict[str, Any]) -> int:
         # gallery-dl's Extractor is class-level state and leaving it patched leaks across them.
         if stop_pacing is not None:
             stop_pacing()
+        if stop_session_watch is not None:
+            stop_session_watch()
         if stop_patches is not None:
             stop_patches()
         if restore_sigterm is not None:

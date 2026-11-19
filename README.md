@@ -86,6 +86,14 @@ the session. See [`extension/README.md`](extension/README.md).
 Either way, values are stored only in the backend's `/data/cookies.json` (mode 0600, gitignored) and
 are never returned over the API.
 
+**When the stored session stops working, send fresh cookies; do not wait.** A platform can log out a
+session at any time. On 2026-11-19 an Instagram session exported 25 days earlier stopped working:
+Instagram answered the very first request by deleting the `sessionid` cookie and redirecting to its
+home page. The job then fails with *"The platform logged out the session stored in this app…"*
+(`login-required`, activity line `ig-session-logged-out`). It is not a rate limit, and waiting will
+not bring the session back. Open the site in your browser, make sure you are still logged in, and
+click the extension's send button again (or paste a new value in Settings).
+
 ### 2. Run it
 
 ```bash
@@ -267,8 +275,9 @@ delay itself, is why Facebook used to be so much slower:
 So pacing is **adaptive by default**. A run starts at the floor and only slows down on evidence the
 platform is pushing back. What that looks like is platform-specific and was measured rather than
 guessed: **Instagram signals a block by redirecting to its bare home page** (captured after 859
-downloads in 885 s — though the same redirect on the *first* request of a run has twice meant
-something else: a retired endpoint, and a missing cookie), Facebook serves a block page with HTTP 200, and either can also arrive as a
+downloads in 885 s — though the same redirect on the *first* request of a run has three times meant
+something else: a retired endpoint, a missing cookie, and a logged-out session, which is detected
+from the deleted `sessionid` cookie and reported as such), Facebook serves a block page with HTTP 200, and either can also arrive as a
 429 or 403/503. Signatures are tiered — a transient throttle backs off and keeps going, while a
 terminal one stops, because retrying into a checkpoint only extends the block. A response that
 cannot be classified counts as neither. The run speeds back up after a clean streak. Only *extractor* requests

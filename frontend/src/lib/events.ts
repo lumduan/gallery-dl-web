@@ -116,6 +116,8 @@ export interface JobEvent {
    * pushback only: a platform pushback signature matched. `tier` decides what it means —
    * `throttle` is transient (backed off, still running), `terminal` means the run is over and
    * retrying would extend the block. `rule` names the signature, e.g. `ig-redirect-root`.
+   * Only the run's FIRST terminal rule is announced. `ig-session-logged-out` is terminal but is
+   * NOT a block: the platform logged the stored session out, and only fresh cookies fix it.
    * `body` is a redacted <=200-byte response prefix; it carries no cookies and no URL.
    */
   tier?: "throttle" | "terminal";
