@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from gallery_dl_web.gallerydl.errors import (
     EMPTY_PROFILE_MARKER,
+    SESSION_LOGGED_OUT_MARKER,
     detect_empty_profile,
     detect_login_wall,
     detect_rate_limit,
+    detect_session_logged_out,
+    is_evidence,
 )
 
 # The shape of a real gallery-dl run (a Facebook profile blocked after 104 images), with every
@@ -315,3 +318,87 @@ def test_empty_profile_does_not_match_ordinary_failures() -> None:
 
 def test_empty_profile_empty_input() -> None:
     assert detect_empty_profile([]) is False
+
+
+# --------------------------------------------------------------- a logged-out session
+
+# gallery-dl's debug traceback for one child's `HTTP redirect to home page`. The real one was ~45
+# lines per child (with the source-caret lines); the frames here are its shape, abridged.
+_ABORT_TRACEBACK = [
+    "debug:instagram:",
+    "Traceback (most recent call last):",
+    '  File ".../gallery_dl/job.py", line 168, in run',
+    "    msg = self.dispatch(extractor)",
+    '  File ".../gallery_dl/job.py", line 227, in dispatch',
+    "    for msg, url, kwdict in messages:",
+    '  File ".../gallery_dl/extractor/instagram.py", line 112, in items',
+    "    for post in posts:",
+    '  File ".../gallery_dl/extractor/instagram.py", line 1144, in _extract_tokens',
+    "    page = self.extractor.request(url).text",
+    '  File ".../gallery_dl/extractor/instagram.py", line 204, in request',
+    "    raise self.exc.AbortExtraction(",
+    "gallery_dl.exception.AbortExtraction: HTTP redirect to home page (https://www.instagram.com/)",
+    "error:instagram:HTTP redirect to home page (https://www.instagram.com/)",
+    "[instagram][error] HTTP redirect to home page (https://www.instagram.com/)",
+] + ["    (frame)"] * 30
+
+# The stderr of a real run on 2026-11-19 (gallery-dl 1.32.19, branch build), sanitized: the
+# profile name is a placeholder and the session tokens are masked. The session had been logged
+# out by Instagram; with no cookies the same profile answered 200. What matters about the shape:
+# the marker arrives on the FIRST reply, then each child extractor (posts, then reels) dies on the
+# same bounce with a long traceback, so by the end the marker is far outside a 50-line window.
+IG_LOGGED_OUT = [
+    "debug:instagram:Using InstagramUserExtractor for 'https://www.instagram.com/someprofile/'",
+    "debug:instagram:Using InstagramPostsExtractor for 'https://www.instagram.com/someprofile/posts/'",
+    "debug:instagram:Extracting GraphQL tokens",
+    "debug:urllib3.connectionpool:Starting new HTTPS connection (1): www.instagram.com:443",
+    'debug:urllib3.connectionpool:https://www.instagram.com:443 "GET /someprofile/ HTTP/1.1" 302 0',
+    "warning:gallery_dl_web.gallerydl.session_watch:instagram.com deleted the 'sessionid' cookie "
+    f"in its reply: {SESSION_LOGGED_OUT_MARKER}",
+    "[gallery_dl_web.gallerydl.session_watch][warning] instagram.com deleted the 'sessionid' "
+    f"cookie in its reply: {SESSION_LOGGED_OUT_MARKER}",
+    'debug:urllib3.connectionpool:https://www.instagram.com:443 "GET / HTTP/1.1" 200 None',
+    *_ABORT_TRACEBACK,
+    "debug:instagram:Using InstagramReelsExtractor for 'https://www.instagram.com/someprofile/reels/'",
+    "debug:instagram:Extracting GraphQL tokens",
+    'debug:urllib3.connectionpool:https://www.instagram.com:443 "GET /someprofile/ HTTP/1.1" 302 0',
+    'debug:urllib3.connectionpool:https://www.instagram.com:443 "GET / HTTP/1.1" 200 None',
+    *_ABORT_TRACEBACK,
+]
+
+
+def test_the_fixture_puts_the_marker_outside_the_managers_window() -> None:
+    """Guard on the fixture itself: it must reproduce the failure that a plain tail suffered."""
+    from gallery_dl_web.jobs.manager import _STDERR_TAIL_LINES
+
+    last_marker = max(
+        i for i, line in enumerate(IG_LOGGED_OUT) if SESSION_LOGGED_OUT_MARKER in line
+    )
+    assert len(IG_LOGGED_OUT) - last_marker > _STDERR_TAIL_LINES
+
+
+def test_detects_the_logged_out_session() -> None:
+    assert detect_session_logged_out(IG_LOGGED_OUT) is True
+
+
+def test_the_same_run_also_reads_as_a_rate_limit_which_is_why_order_matters() -> None:
+    """The redirect wording is still there, and still matches the block. Only the order in
+    ``_annotate_failure`` stops it from winning."""
+    assert detect_rate_limit(IG_LOGGED_OUT) is not None
+
+
+def test_the_redirect_wording_alone_is_not_a_logout() -> None:
+    """The real 2026-08-26 block had no marker: it must stay a rate limit."""
+    block = [line for line in IG_LOGGED_OUT if SESSION_LOGGED_OUT_MARKER not in line]
+    assert detect_session_logged_out(block) is False
+    assert detect_rate_limit(block) is not None
+
+
+def test_only_our_marker_is_evidence() -> None:
+    assert is_evidence(IG_LOGGED_OUT[5]) is True
+    assert not any(is_evidence(line) for line in _ABORT_TRACEBACK)
+    assert is_evidence("HTTP redirect to home page (https://www.instagram.com/)") is False
+
+
+def test_session_logged_out_empty_input() -> None:
+    assert detect_session_logged_out([]) is False

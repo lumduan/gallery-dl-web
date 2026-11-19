@@ -130,10 +130,17 @@ Both sides must honor it; the TS mirror lives in `frontend/src/lib/events.ts`.
     The key is absent when nothing was observed, and in `fixed` mode (no pacer is installed).
 12c. **`pushback` reports WHY, where `pacing` reports WHAT.** `pacing` says the delay moved and is
     rate-limited to one per 5 s — right for a ramp climbing in millisecond steps, wrong for "the
-    platform just threw us out". A pushback is rare by nature and is emitted every time a signature
-    matches, though it still shares `pacing`'s 200-event budget for the deque reason in rule 12.
+    platform just threw us out". A pushback is rare by nature and a `throttle` one is emitted every
+    time a signature matches, though it still shares `pacing`'s 200-event budget for the deque
+    reason in rule 12. **A `terminal` one is emitted once per run, for the first terminal rule.**
+    The rest are the tail of the same bounce. A logged-out session's 302 is followed by the home
+    page itself, which matches `ig-redirect-root`, and announcing that too put "rate limit" right
+    under the line saying it was not one. Every response is still in `pacing_telemetry`.
     `tier` is `throttle` (transient — back off and keep going) or `terminal` (stop; retrying into a
     checkpoint extends the block). `rule` names the signature, e.g. `ig-redirect-root`.
+    ➡️ **`ig-session-logged-out` (2026-11-19) is terminal but is NOT a block.** The platform's reply
+    deleted the stored `sessionid`, so the session is logged out, and the job ends
+    `failed: login-required` with "refresh your cookies" advice. Waiting cannot fix it.
     ⚠️ **Instagram's block is a 302 to the bare home page**, captured 2026-08-26 after 859 downloads
     and 885 s. It is not a 429 and not an HTTP 200 carrying `{"status": "fail"}`. Before the
     signature table, all 50 requests in that run's ring buffer — the fatal redirect included —

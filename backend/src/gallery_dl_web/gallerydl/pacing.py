@@ -61,7 +61,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from gallery_dl_web.gallerydl import signatures, telemetry
+from gallery_dl_web.gallerydl import session_watch, signatures, telemetry
 from gallery_dl_web.gallerydl.errors import detect_rate_limit
 
 # A payload can ask for any ceiling; this is the one it can never exceed. Above roughly this, a
@@ -226,15 +226,24 @@ class AdaptivePacer:
             return  # neutral: neither evidence of health nor of pushback
 
         reason = rule or tier.value
-        self._emit_pushback(tier, reason, response, streamed=streamed)
         if tier is signatures.Tier.TERMINAL:
+            # The FIRST terminal rule names the run, and only it is announced. What follows is the
+            # tail of the same bounce: a logged-out session's 302 (`ig-session-logged-out`) is
+            # followed by the home page itself, which matches `ig-redirect-root`, and each child
+            # extractor repeats the pair. Announcing those too put "this is a rate limit" right
+            # under the line that says it is not one.
+            with self._lock:
+                first = self._terminal is None
+                if first:
+                    self._terminal = reason
+            if first:
+                self._emit_pushback(tier, reason, response, streamed=streamed)
             # Straight to the ceiling and hold. Backing off cannot recover a block — gallery-dl has
             # already raised AbortExtraction by now — but the run may still have queued work in
             # flight, and nothing about this response justifies speeding back up.
-            with self._lock:
-                self._terminal = reason
             self.penalize(reason, hard=True)
             return
+        self._emit_pushback(tier, reason, response, streamed=streamed)
         self.penalize(reason, hard=rule == "http-429")
 
     @property
@@ -358,6 +367,7 @@ class AdaptivePacer:
             content_type=ctype,
             body=body,
             streamed=streamed,
+            deleted_cookies=session_watch.deleted_cookies(response),
         )
         return signatures.classify(self._platform, obs)
 

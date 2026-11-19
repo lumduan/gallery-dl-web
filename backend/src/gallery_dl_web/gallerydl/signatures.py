@@ -49,6 +49,10 @@ class Observation:
 
     ``url`` is the **raw** URL here, unlike ``telemetry``'s host+path form: matching happens
     in-process and never leaves it, while the telemetry record is built for sharing.
+
+    ``deleted_cookies`` holds the NAMES of cookies the response's ``Set-Cookie`` headers expire
+    (``session_watch.deleted_cookies``), never a value. It is the only header-derived field, and
+    it exists because a logged-out session and a rate-limit block are otherwise identical here.
     """
 
     status: int | None
@@ -56,6 +60,7 @@ class Observation:
     content_type: str
     body: str
     streamed: bool
+    deleted_cookies: tuple[str, ...] = ()
 
     @property
     def host(self) -> str:
@@ -112,6 +117,15 @@ def _html_for_api(obs: Observation) -> bool:
 
 
 INSTAGRAM: tuple[Signature, ...] = (
+    # OBSERVED 2026-11-19. NOT a block: Instagram logged the stored session out. The run's first
+    # request (the profile page) answered 302 to the home page while DELETING `sessionid`, and the
+    # bounce then matches `ig-redirect-root` below, which is why this rule must come first. Without
+    # cookies the same page answered 200. The fix is fresh cookies, never waiting.
+    Signature(
+        "ig-session-logged-out",
+        Tier.TERMINAL,
+        lambda o: _is_meta_host(o) and "sessionid" in o.deleted_cookies,
+    ),
     # OBSERVED 2026-08-26. The real block. gallery-dl raises AbortExtraction on it
     # (instagram.py:204), so by the time we classify, the run is already over -- the value is in
     # reporting it as a rate limit rather than a traceback, and in never treating it as clean.

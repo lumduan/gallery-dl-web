@@ -262,6 +262,47 @@ def test_fixed_mode_leaves_gallery_dl_pacing_alone(monkeypatch: pytest.MonkeyPat
     assert seen[0] is pristine
 
 
+@pytest.mark.parametrize("mode", ["fixed", "adaptive"])
+def test_the_session_watch_runs_in_every_pacing_mode(
+    monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    """The logout evidence reaches no other sensor, and ``fixed`` mode installs no pacer at all.
+    Verified live on 2026-11-19: a ``fixed`` job on a logged-out session ended ``login-required``
+    only because of this."""
+    from gallery_dl.extractor.common import Extractor
+
+    from gallery_dl_web.gallerydl import session_watch
+
+    _patch_common(monkeypatch)
+    pristine = Extractor._init_session
+    active: list[bool] = []
+    monkeypatch.setattr(
+        worker.job,
+        "DownloadJob",
+        lambda url: (active.append(session_watch._INSTALLED is not None), _StatusJob(0))[1],
+    )
+    worker.run(_payload(pacing=_pacing(mode=mode)))
+    assert active == [True]
+    assert session_watch._INSTALLED is None
+    assert Extractor._init_session is pristine, "the two _init_session wrappers unwound wrongly"
+
+
+def test_the_session_watch_is_removed_even_when_the_job_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from gallery_dl.extractor.common import Extractor
+
+    _patch_common(monkeypatch)
+    pristine = Extractor._init_session
+
+    def _boom(url: str) -> Any:  # noqa: ARG001
+        raise RuntimeError("gallery-dl exploded")
+
+    monkeypatch.setattr(worker.job, "DownloadJob", _boom)
+    assert worker.run(_payload(pacing=_pacing())) == 2
+    assert Extractor._init_session is pristine
+
+
 def test_pacing_is_removed_even_when_the_job_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     from gallery_dl.extractor.common import Extractor
 

@@ -257,6 +257,56 @@ def test_rate_limit_beats_login_wall_in_annotation() -> None:
     assert event["reason"] == "rate-limited"
 
 
+def test_a_logged_out_session_outranks_the_rate_limit_it_looks_like() -> None:
+    """The one deliberate exception to "rate-limiting wins the tie": the deleted session cookie is
+    direct evidence, and the redirect wording beside it is the block's exact text."""
+    from collections import deque
+
+    from gallery_dl_web.gallerydl.errors import SESSION_LOGGED_OUT_MESSAGE
+    from tests.gallerydl.test_errors import IG_LOGGED_OUT
+
+    event: dict = {"type": "failed", "reason": "dl-failed"}
+    mgr_mod._annotate_failure(event, deque(IG_LOGGED_OUT))
+    assert event["reason"] == "login-required"
+    assert event["message"] == SESSION_LOGGED_OUT_MESSAGE
+    assert "resume_url" not in event
+
+
+def test_a_plain_50_line_window_loses_the_logout_and_the_stderr_tail_keeps_it() -> None:
+    """Why StderrTail exists. The same lines, appended one by one as the drain does."""
+    from collections import deque
+
+    from tests.gallerydl.test_errors import IG_LOGGED_OUT
+
+    plain: deque[str] = deque(maxlen=mgr_mod._STDERR_TAIL_LINES)
+    pinned = mgr_mod.StderrTail(mgr_mod._STDERR_TAIL_LINES)
+    for line in IG_LOGGED_OUT:
+        plain.append(line)
+        pinned.append(line)
+
+    assert list(pinned) == list(plain), "the rolling window itself must not change"
+    lost: dict = {"type": "failed", "reason": "dl-failed"}
+    mgr_mod._annotate_failure(lost, plain)
+    assert lost["reason"] == "rate-limited", "the fixture no longer reproduces the original bug"
+
+    kept: dict = {"type": "failed", "reason": "dl-failed"}
+    mgr_mod._annotate_failure(kept, pinned)
+    assert kept["reason"] == "login-required"
+
+
+def test_the_stderr_tail_pins_only_evidence_and_only_a_few() -> None:
+    from gallery_dl_web.gallerydl.errors import SESSION_LOGGED_OUT_MARKER
+
+    tail = mgr_mod.StderrTail(3)
+    for i in range(10):
+        tail.append(f"noise {i}")
+    assert list(tail.evidence) == []
+    for i in range(mgr_mod._STDERR_EVIDENCE_LINES + 3):
+        tail.append(f"x{i}: {SESSION_LOGGED_OUT_MARKER}")
+    assert len(tail) == 3
+    assert len(tail.evidence) == mgr_mod._STDERR_EVIDENCE_LINES, "evidence must stay bounded"
+
+
 def test_annotate_keeps_reason_and_appends_tail_for_ordinary_failures() -> None:
     from collections import deque
 

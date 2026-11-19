@@ -48,6 +48,10 @@ _RATE_LIMIT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
         # profile lookup and reels still work. `config_builder._cookie_for` now derives that
         # cookie, so this wording should again mean a block -- but a redirect before the first
         # file, on a session that just resolved the profile, is the tell that it does not.
+        # ⚠️ And OBSERVED 2026-11-19: a session Instagram has LOGGED OUT gets the same redirect on
+        # the run's first request, the profile page itself. That case is told apart by the
+        # deleted `sessionid` cookie (`session_watch.py`) and is checked BEFORE this table, in
+        # `jobs/manager.py:_annotate_failure`, because waiting cannot fix it.
         re.compile(r"HTTP redirect to (?:home|login|challenge) page", re.I),
         "Instagram redirected the run to its home page, which is how it signals a rate limit — "
         "it is not a download error. Wait (typically hours), then run the profile again; files "
@@ -147,6 +151,27 @@ _EMPTY_PROFILE_RE = re.compile(
     re.I,
 )
 
+# Logged by `session_watch.py` when a platform's reply DELETES its session cookie -- the only
+# in-band evidence that the stored session was logged out. Imported by the logger, so the text that
+# is written and the text matched here cannot drift apart. OBSERVED 2026-11-19 on Instagram: the
+# deletion rides on a 302 to the home page, which gallery-dl reports as `HTTP redirect to home
+# page`, word for word the rate-limit block's text. The deletion is what tells them apart.
+SESSION_LOGGED_OUT_MARKER = "the platform logged this session out"
+
+_SESSION_LOGGED_OUT_RE = re.compile(re.escape(SESSION_LOGGED_OUT_MARKER), re.I)
+
+# States what was seen, then the action. "Waiting will not help" is the sentence that matters: the
+# same run used to be reported as a rate limit whose advice was to wait hours. The last sentence
+# covers a logout that came at the END of a long run, where a block may be what caused it.
+SESSION_LOGGED_OUT_MESSAGE = (
+    "The platform logged out the session stored in this app: one of its replies deleted the "
+    "session cookie. This is not a rate limit, and waiting will not bring the session back. Open "
+    "the site in the browser you export cookies from, make sure you are still logged in (log in "
+    "again if not), then send fresh cookies with the extension or paste them in Settings. Files "
+    "already downloaded are skipped. If this happened partway through a long run, also give the "
+    "account a rest before the next one."
+)
+
 LOGIN_WALL_MESSAGE = (
     "This content needs a logged-in session. Either the profile is private or restricted, or the "
     "platform is refusing anonymous access to it. Add cookies for this platform in Settings and "
@@ -217,6 +242,26 @@ def detect_login_wall(stderr_lines: Iterable[str], *, anonymous: bool = False) -
     if any(_LOGIN_WALL_RE.search(line) for line in lines):
         return True
     return anonymous and any(_ANON_LOGIN_WALL_RE.search(line) for line in lines)
+
+
+def is_evidence(line: str) -> bool:
+    """True for a stderr line whose meaning does not depend on being near the end.
+
+    ``jobs/manager.py:StderrTail`` pins these outside its rolling window. Only lines our own worker
+    writes qualify: they are rare by construction (logged once per run), so pinning them cannot
+    crowd anything out, whereas gallery-dl's wording repeats per child extractor.
+    """
+    return bool(_SESSION_LOGGED_OUT_RE.search(line))
+
+
+def detect_session_logged_out(stderr_lines: Iterable[str]) -> bool:
+    """True if the worker saw the platform delete the stored session's cookie.
+
+    Checked BEFORE ``detect_rate_limit``, the one deliberate exception to "rate-limiting wins the
+    tie": the deletion is direct evidence, while the redirect wording that follows it is inference.
+    Even when a block is what caused the logout, the session is gone, and only fresh cookies help.
+    """
+    return any(_SESSION_LOGGED_OUT_RE.search(line) for line in stderr_lines)
 
 
 def detect_empty_profile(stderr_lines: Iterable[str]) -> bool:

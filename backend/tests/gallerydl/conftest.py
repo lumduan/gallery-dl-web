@@ -39,7 +39,8 @@ def _pristine_extractor() -> Any:
     """gallery-dl's Extractor is class-level state shared by the whole test session.
 
     ``pacing.install`` patches ``Extractor.request`` / ``_init_session`` and adds a root log
-    handler; ``upstream_patches.install`` patches ``FacebookExtractor._extract_profile_page``. A
+    handler; ``session_watch.install`` wraps ``_init_session`` too; ``upstream_patches.install``
+    patches ``FacebookExtractor._extract_profile_page``. A
     test that forgets to uninstall would silently pace, log, and re-classify every later test.
 
     Facebook is imported eagerly rather than probed through ``sys.modules``: the module is small
