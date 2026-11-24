@@ -21,8 +21,10 @@ dependencies = [
     # 1.32.12 moved Instagram posts/reels onto the Polaris GraphQL API (Instagram retired the REST
     # /api/v1/feed/user/ listing: it 302s every caller to the home page). Instagram then changed
     # those queries again from ~2026-10-16: on <= 1.32.17 every profile lookup ends in
-    # "NotFoundError: Requested user could not be found". 1.32.19 is the release verified live.
-    "gallery-dl>=1.32.19",
+    # "NotFoundError: Requested user could not be found". 1.32.19 was verified live 2026-11-07;
+    # 1.32.21 is the release verified live now (2026-11-24). Since 1.32.20 the HTTP downloader also
+    # retries an image 429 by default; tests/gallerydl/test_upstream_pins.py bounds that sleep.
+    "gallery-dl>=1.32.21",
     # 13.0.0 fixes ~40 advisories, two of them critical in the JPEG decoder, and every thumbnail
     # decodes a third-party image (profiles/thumbnails.py).
     "Pillow>=13.0",
