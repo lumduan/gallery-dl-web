@@ -46,6 +46,10 @@ _IG_DEFAULTS: dict[str, Any] = {
     # Per-IMAGE delay, a different axis from `sleep-request` above. 0 = off, which is what a direct
     # worker invocation with no `pacing` block gets; the manager always resolves a real value.
     "sleep": 0.0,
+    # No `sleep-429` here, so gallery-dl's 60 s default applies. Since 1.32.20 an image that
+    # answers 429 is retried up to 4 times after that sleep, so one image can stay silent for
+    # ~240 s. That only fits because the progress deadline is 300 s; test_upstream_pins.py
+    # asserts the budget, so adding a larger value here will fail it.
     "directory": ["instagram", "{username}"],
     "filename": "{date}_{media_id}_{shortcode}.{extension}",
 }

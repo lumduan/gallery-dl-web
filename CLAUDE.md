@@ -185,8 +185,10 @@ profile.** Every job died before its first file with `NotFoundError: Requested u
 found` — cookies or not (mikf/gallery-dl#9818, #9829; codeberg cb#519, cb#545). 1.32.17/18
 rewrote the user and posts queries and collect their `relay` parameters from the JS bundles at
 run time (so a run now starts with ~9 `static.cdninstagram.com/rsrc.php` fetches — expected, not a
-fault), and 1.32.17 removed the `user-strategy` option (topsearch is gone). `pyproject.toml`
-floors the dependency at **1.32.19**, the release verified live on 2026-11-07.
+fault), and 1.32.17 removed the `user-strategy` option (topsearch is gone). 1.32.19 was the
+release verified live on 2026-11-07. ➡️ Since 2026-11-24 `pyproject.toml` floors the dependency
+at **1.32.21**, verified live that day on both platforms. The bump changed one thing we depend
+on: image 429s are now retried (see the `sleep-429` paragraph below).
 
 **The posts listing now needs `ds_user_id` beside `sessionid`.** Observed 2026-11-07 on 1.32.19,
 one profile, A/B twice: `sessionid` alone → `POST /graphql/query` 302s to the home page (gallery-dl's
@@ -214,10 +216,14 @@ Consequences of the move to Polaris, observed live on 1.32.15 and re-checked on 
   listing. On 1.32.12-1.32.16 `_pagination_graphql` also *broke out silently* on a page it could
   not parse, so a soft block there would have ended the walk as a short **completed** job.
   ➡️ Since 1.32.17 a page that is not JSON or lacks the expected field raises `AbortExtraction:
-  Failed to load API data (…)` instead. Still silent: a well-formed page with no `edges`, or one
-  whose `page_info` is missing or says there is no next page. Adding the type is still not a
-  one-liner: Instagram's JS bundles are `text/javascript` too, and their string literals plausibly
-  contain `challenge_required`. Any capture must therefore be scoped to `/graphql` paths.
+  Failed to load API data (…)` instead. Since 1.32.20 (`_load_graphql`) the wording varies: a page
+  that will not parse still reads `Failed to load API data (JSONDecodeError: …)`, but a page that
+  carries an error now reads as the server's own message in double quotes, with no prefix. Nothing
+  in `errors.py` matches the prefix, so no rule moved. Still silent: a well-formed page with no
+  `edges`, or one whose `page_info` is missing or says there is no next page. Adding the type is
+  still not a one-liner: Instagram's JS bundles are `text/javascript` too, and their string
+  literals plausibly contain `challenge_required`. Any capture must therefore be scoped to
+  `/graphql` paths.
 
 **`include` is resolved exactly once, before the defaults loop** (`_resolve_include`), because the
 avatar block appends to it. It used to be derived twice from raw `options`; leave it that way and
@@ -496,6 +502,19 @@ gallery-dl's defaults an unparseable photo costs `2 x (60 + 1) s` of dead sleep 
 `prepare` or `file`, so two consecutive ones exceed `stall_floor_seconds` on their own and get a
 healthy job killed. Never *flatten* `sleep-429`: `downloader/http.py` inherits
 `extractor._interval_429` for CDN 429s, so a small constant is how a soft block becomes a hard one.
+
+**Since gallery-dl 1.32.20 an image that answers 429 is retried, and that sleep is silent.** Up
+to 1.32.19 an image 429 failed at once, because 429 was not in the default `retry-codes`. 1.32.20
+adds it whenever `sleep-429` resolves to a duration, then sleeps `max(tries, sleep-429(tries))`
+before each of up to `retries` (4) retries. None of that emits `prepare` or `file`, so it spends the
+progress deadline. One image's worst case at the shipped defaults:
+- **Instagram:** about 242 s (the 2.3 s top of the per-image band plus 4 x gallery-dl's default 60 s).
+- **Facebook:** 165 s (our shaped 15 + 30 + 60 + 60).
+
+Both are under the 300 s floor, and the next image's `prepare` resets the clock.
+`test_upstream_pins.py` pins the formula and asserts that budget. Raising `retries`, giving
+Instagram a larger `sleep-429`, or a per-image delay above about 50 s (Settings accepts up to
+60 s) would let one rate-limited image get a healthy job killed as stalled.
 
 **Adding a `Settings` field means touching five places**: `config.py`, `.env.example`,
 `backend/.env.example` (used when the backend runs standalone), and the `environment:` block of

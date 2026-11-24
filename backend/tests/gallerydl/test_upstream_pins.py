@@ -13,9 +13,15 @@ from __future__ import annotations
 
 import inspect
 
+import pytest
 from gallery_dl import exception, job, util
+from gallery_dl.downloader.http import HttpDownloader
 from gallery_dl.extractor.common import Extractor
 from gallery_dl.extractor.facebook import FacebookExtractor, FacebookPhotosExtractor
+from gallery_dl.extractor.instagram import InstagramExtractor
+
+from gallery_dl_web.config import Settings
+from gallery_dl_web.gallerydl.config_builder import _PER_FILE_JITTER, _PLATFORM_DEFAULTS
 
 
 def test_a_per_file_sleep_is_never_charged_on_a_skip() -> None:
@@ -71,6 +77,73 @@ def test_the_per_file_sleep_is_additive_not_a_spacing_floor() -> None:
     """
     assert "request_timestamp" in inspect.getsource(Extractor.request)
     assert "request_timestamp" not in inspect.getsource(Extractor.sleep)
+
+
+def test_an_image_429_is_retried_after_a_sleep_429_wait() -> None:
+    """What turns a CDN 429 on an image into silent sleep instead of one failed file.
+
+    Up to 1.32.19 an image that answered 429 failed at once, because 429 was not in the default
+    ``retry-codes``. 1.32.20 adds it whenever ``sleep-429`` resolves to a duration, which it always
+    does for us, and before each retry sleeps ``max(tries, interval_429(tries))``. Nothing is
+    emitted during that sleep (no ``prepare``, no ``file``), so it spends the manager's progress
+    deadline. The test below bounds it; this one pins the formula that test models.
+    """
+    init = inspect.getsource(HttpDownloader.__init__)
+    impl = inspect.getsource(HttpDownloader._download_impl)
+    options = inspect.getsource(Extractor._init_options)
+
+    assert "[*extractor._retry_codes, 429]" in init, (
+        "the downloader no longer adds 429 to its retry codes — re-check what an image 429 does"
+    )
+    assert 'self.config("retries", extractor._retries)' in init, "retry count source moved"
+    assert 'self.config("retries", 4)' in options, "the default retry count moved or changed"
+    for marker in (
+        "if tries > self.retries:",
+        "seconds = self.interval_retry(tries)",
+        "s = self.interval_429(tries)",
+        "if seconds < s:",
+        "time.sleep(seconds)",
+    ):
+        assert marker in impl, f"{marker!r} not found — the retry sleep this pin models changed"
+
+
+@pytest.mark.parametrize(
+    ("platform", "extractor"),
+    [("instagram", InstagramExtractor), ("facebook", FacebookExtractor)],
+)
+def test_the_worst_image_429_retry_sleep_stays_inside_the_progress_deadline(
+    platform: str, extractor: type[Extractor]
+) -> None:
+    """One image's worst case must fit between two progress events, at the shipped defaults.
+
+    After the first file, the progress deadline is at least ``stall_floor_seconds``, and each
+    image's ``prepare`` resets it. The longest an image can then stay silent is the top of its
+    per-image delay band plus every retry sleep above. Today that is about 242 s on Instagram
+    (2.3 + 4 x 60, gallery-dl's default ``sleep-429``) and 165 s on Facebook (15 + 30 + 60 + 60,
+    our shaped value), against 300 s. Raising ``retries`` or ``sleep-429``, or a gallery-dl that
+    sleeps longer, would let one rate-limited image get a healthy job killed as stalled.
+
+    Known edge, not covered here: Settings accepts a per-image delay up to 60 s. With an
+    Instagram value above about 50 s the sum passes 300 s.
+    """
+    defaults = _PLATFORM_DEFAULTS[platform]
+    interval_429 = util.build_duration_func_ex(
+        defaults.get("sleep-429", extractor.request_interval_429)
+    )
+    assert interval_429 is not None, "sleep-429 resolved to nothing — this pin checks nothing"
+    retries = defaults.get("retries", 4)
+    retry_sleep = sum(max(t, interval_429(t)) for t in range(1, retries + 1))
+
+    per_file = Settings.model_fields[f"{platform}_sleep_file"].default
+    assert isinstance(per_file, float)
+    floor = Settings.model_fields["stall_floor_seconds"].default
+    assert isinstance(floor, float)
+
+    worst = per_file * (1.0 + _PER_FILE_JITTER) + retry_sleep
+    assert worst < floor, (
+        f"{platform}: one image can sleep {worst:.0f} s on 429 retries, "
+        f"past the {floor:.0f} s progress deadline"
+    )
 
 
 def test_facebook_still_returns_an_unkeyed_dict_for_a_profile_it_cannot_read() -> None:

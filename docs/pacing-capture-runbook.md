@@ -112,3 +112,7 @@ Answer three questions, then write the signature table against the answers:
    Two silent exits remain: a well-formed page with no `edges` anywhere, and one whose
    `page_info` is missing or says `has_next_page: false` — which is also what a soft limit
    dressed as "the end" would look like. The file-count comparison above still applies.
+   ➡️ **Re-checked on 1.32.21 (2026-11-24): unchanged.** The parsing moved into
+   `_load_graphql` (`instagram.py:1260`), and the two silent exits are now at `:1389-1395` (no
+   `edges`) and `:1400-1402` (`page_info`). A page that carries an error now raises with the
+   server's own message in double quotes, not `Failed to load API data (…)`.
