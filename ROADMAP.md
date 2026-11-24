@@ -73,9 +73,12 @@ flowchart TD
 | **16 · The logged-out session** | ✅ DONE | Instagram downloads failed on the run's **first request** with `HTTP redirect to home page`, zero files, and the app said **"rate-limited, wait (typically hours)"**. Probed 2026-11-19: **with no cookies the same profile answered 200**, with the stored session it answered **302 while deleting `sessionid`** (`expires` 1970, negative `Max-Age`). Instagram had **logged the session out** (exported 2026-10-25, worked on 2026-11-07); waiting could never fix it, only fresh cookies can. Neither sensor could see a header: stderr carries only gallery-dl's wording, the signature table judged status/URL/body. Now `session_watch.py`, a response hook installed in **every** pacing mode, logs a marker (cookie names only, never values); the pacer matches `ig-session-logged-out` above `ig-redirect-root`, and announces only the run's first terminal rule; `_annotate_failure` checks the logout **before** the rate limit and reports `login-required` with "refresh your cookies". A second defect surfaced in the live run: the marker arrives on line 6 of 111, and the children's tracebacks pushed it out of the 50-line stderr window, so the stderr tail now **pins evidence lines** (`StderrTail`). **Live-verified 2026-11-19** on the real logged-out session through a branch build: `adaptive` and `fixed` both end `login-required` with the new message, one activity line `ig-session-logged-out`. 7 sabotages each turned the new tests red. Merged as PR #75; **`v0.7.3` tagged 2026-11-19**. The app now names the problem; downloads resume once the operator sends fresh Instagram cookies | — |
 | **D1 · Operator cookies** | ✅ DONE | Real IG `sessionid` + FB cookies in use; live downloads confirmed 2026-07-23 | — |
 
-> **All phases are complete and released; the current release is `v0.7.3`, which ships phase
-> 16** (`v0.7.2` shipped phase 15 plus the Pillow 13 security update) (`v0.1.0` shipped phase 4, `v0.2.0` phase 5, `v0.3.0` phase 6, `v0.4.0` phase 7,
-> `v0.5.0` phase 8, `v0.6.0` phase 9, `v0.7.0` phases 10-13, `v0.7.1` phase 14, `v0.7.2` phase 15, `v0.7.3` phase 16). Live E2E passes against real
+> **All phases are complete and released; the current release is `v0.7.4`, a maintenance
+> release with no new phase:** gallery-dl 1.32.21, plus a test bounding the image-429 retry sleep
+> that 1.32.20 introduced. `v0.7.3` shipped phase 16, and `v0.7.2` shipped phase 15 plus the
+> Pillow 13 security update. (`v0.1.0` shipped phase 4, `v0.2.0` phase 5, `v0.3.0` phase 6,
+> `v0.4.0` phase 7, `v0.5.0` phase 8, `v0.6.0` phase 9, `v0.7.0` phases 10-13, `v0.7.1` phase 14,
+> `v0.7.2` phase 15, `v0.7.3` phase 16, `v0.7.4` maintenance.) Live E2E passes against real
 > Instagram and Facebook profiles, and both images publish to ghcr on tag. Note that Facebook
 > rate-limits an account after a few hundred images in one run ("temporarily blocked from viewing
 > images"); that is a platform limit, not a defect, and the job reports it verbatim — and since
